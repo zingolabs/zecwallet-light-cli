@@ -12,12 +12,12 @@ use crate::{
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use futures::Future;
 use log::{error, info, warn};
+use std::sync::mpsc;
 use std::{
     cmp,
     collections::HashMap,
-    convert::TryFrom,
     io::{self, Error, ErrorKind, Read, Write},
-    sync::{atomic::AtomicU64, mpsc::channel, Arc},
+    sync::{atomic::AtomicU64, Arc},
     time::SystemTime,
 };
 use tokio::sync::RwLock;
@@ -25,13 +25,13 @@ use zcash_client_backend::{
     address,
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, encode_payment_address},
 };
-use zcash_primitives::serialize::Optional;
+use zcash_encoding::{Optional, Vector};
+use zcash_primitives::memo::MemoBytes;
+use zcash_primitives::sapling::prover::TxProver;
 use zcash_primitives::{
-    consensus::{BlockHeight, BranchId},
+    consensus::{BlockHeight},
     legacy::Script,
     memo::Memo,
-    prover::TxProver,
-    serialize::Vector,
     transaction::{
         builder::Builder,
         components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
@@ -334,7 +334,7 @@ impl LightWallet {
         // in case of rescans etc...
         writer.write_u64::<LittleEndian>(self.get_birthday().await)?;
 
-        Optional::write(&mut writer, &self.verified_tree.read().await.as_ref(), |w, t| {
+        Optional::write(&mut writer, self.verified_tree.read().await.as_ref(), |w, t| {
             use prost::Message;
             let mut buf = vec![];
 
@@ -879,7 +879,7 @@ impl LightWallet {
             .values()
             .flat_map(|wtx| {
                 wtx.notes.iter().map(|n| {
-                    let (_, pa) = n.extfvk.default_address().unwrap();
+                    let (_, pa) = n.extfvk.default_address();
                     let zaddr = encode_payment_address(self.config.hrp_sapling_address(), &pa);
                     zaddrs.iter().position(|za| *za == zaddr).unwrap_or(zaddrs.len())
                 })
@@ -976,7 +976,7 @@ impl LightWallet {
 
         // Check how much we've selected
         let transparent_value_selected = utxos.iter().fold(Amount::zero(), |prev, utxo| {
-            prev + Amount::from_u64(utxo.value).unwrap()
+            (prev + Amount::from_u64(utxo.value).unwrap()).unwrap()
         });
 
         // If we are allowed only transparent funds or we've selected enough then return
@@ -1012,7 +1012,7 @@ impl LightWallet {
             let notes = candidate_notes
                 .into_iter()
                 .scan(Amount::zero(), |running_total, spendable| {
-                    if *running_total >= target_amount - transparent_value_selected {
+                    if *running_total >= (target_amount - transparent_value_selected).unwrap() {
                         None
                     } else {
                         *running_total += Amount::from_u64(spendable.note.value).unwrap();
@@ -1021,11 +1021,15 @@ impl LightWallet {
                 })
                 .collect::<Vec<_>>();
             let sapling_value_selected = notes.iter().fold(Amount::zero(), |prev, sn| {
-                prev + Amount::from_u64(sn.note.value).unwrap()
+                (prev + Amount::from_u64(sn.note.value).unwrap()).unwrap()
             });
 
-            if sapling_value_selected + transparent_value_selected >= target_amount {
-                return (notes, utxos, sapling_value_selected + transparent_value_selected);
+            if sapling_value_selected + transparent_value_selected >= Some(target_amount) {
+                return (
+                    notes,
+                    utxos,
+                    (sapling_value_selected + transparent_value_selected).unwrap(),
+                );
             }
         }
 
@@ -1035,7 +1039,6 @@ impl LightWallet {
 
     pub async fn send_to_address<F, Fut, P: TxProver>(
         &self,
-        consensus_branch_id: u32,
         prover: P,
         transparent_only: bool,
         tos: Vec<(&str, u64, Option<String>)>,
@@ -1050,7 +1053,7 @@ impl LightWallet {
 
         // Call the internal function
         match self
-            .send_to_address_internal(consensus_branch_id, prover, transparent_only, tos, broadcast_fn)
+            .send_to_address_internal(prover, transparent_only, tos, broadcast_fn)
             .await
         {
             Ok((txid, rawtx)) => {
@@ -1066,7 +1069,6 @@ impl LightWallet {
 
     async fn send_to_address_internal<F, Fut, P: TxProver>(
         &self,
-        consensus_branch_id: u32,
         prover: P,
         transparent_only: bool,
         tos: Vec<(&str, u64, Option<String>)>,
@@ -1120,17 +1122,21 @@ impl LightWallet {
             None => return Err("No blocks in wallet to target, please sync first".to_string()),
         };
 
+        let (progress_notifier, progress_notifier_rx) = mpsc::channel();
         let mut builder = Builder::new(self.config.get_params().clone(), target_height);
+        builder.with_progress_notifier(progress_notifier);
 
         // Create a map from address -> sk for all taddrs, so we can spend from the
         // right address
         let address_to_sk = self.keys.read().await.get_taddr_to_sk_map();
 
-        let (notes, utxos, selected_value) = self.select_notes_and_utxos(target_amount, transparent_only, true).await;
-        if selected_value < target_amount {
+        let (notes, utxos, selected_value) = self
+            .select_notes_and_utxos(target_amount.unwrap(), transparent_only, true)
+            .await;
+        if selected_value < target_amount.unwrap() {
             let e = format!(
                 "Insufficient verified funds. Have {} zats, need {} zats. NOTE: funds need at least {} confirmations before they can be spent.",
-                u64::from(selected_value), u64::from(target_amount), self.config.anchor_offset.last().unwrap() + 1
+                u64::from(selected_value), u64::from(target_amount.unwrap()), self.config.anchor_offset.last().unwrap() + 1
             );
             error!("{}", e);
             return Err(e);
@@ -1162,7 +1168,7 @@ impl LightWallet {
                         let e = format!("Couldn't find the secreykey for taddr {}", utxo.address);
                         error!("{}", e);
 
-                        Err(zcash_primitives::transaction::builder::Error::InvalidAddress)
+                        Err(zcash_primitives::transaction::builder::Error::InvalidAmount)
                     }
                 }
             })
@@ -1198,12 +1204,12 @@ impl LightWallet {
         for (to, value, memo) in recepients {
             // Compute memo if it exists
             let encoded_memo = match memo {
-                None => None,
+                None => MemoBytes::empty(),
                 Some(s) => {
                     // If the string starts with an "0x", and contains only hex chars ([a-f0-9]+) then
                     // interpret it as a hex
                     match utils::interpret_memo_string(s) {
-                        Ok(m) => Some(m),
+                        Ok(m) => m,
                         Err(e) => {
                             error!("{}", e);
                             return Err(e);
@@ -1228,14 +1234,13 @@ impl LightWallet {
         }
 
         // Set up a channel to recieve updates on the progress of building the transaction.
-        let (tx, rx) = channel::<u32>();
         let progress = self.send_progress.clone();
 
         // Use a separate thread to handle sending from std::mpsc to tokio::sync::mpsc
         let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
         std::thread::spawn(move || {
-            while let Ok(r) = rx.recv() {
-                tx2.send(r).unwrap();
+            while let Ok(r) = progress_notifier_rx.recv() {
+                tx2.send(r.cur()).unwrap();
             }
         });
 
@@ -1256,11 +1261,7 @@ impl LightWallet {
         }
 
         println!("{}: Building transaction", now() - start_time);
-        let (tx, _) = match builder.build_with_progress_notifier(
-            BranchId::try_from(consensus_branch_id).unwrap(),
-            &prover,
-            Some(tx),
-        ) {
+        let (tx, _) = match builder.build(&prover) {
             Ok(res) => res,
             Err(e) => {
                 let e = format!("Error creating transaction: {:?}", e);

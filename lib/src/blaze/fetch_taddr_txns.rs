@@ -12,6 +12,8 @@ use tokio::{
 };
 use zcash_primitives::consensus::BlockHeight;
 
+use zcash_primitives::consensus::BranchId;
+use zcash_primitives::consensus::Parameters;
 use zcash_primitives::transaction::Transaction;
 
 pub struct FetchTaddrTxns {
@@ -32,6 +34,7 @@ impl FetchTaddrTxns {
             oneshot::Sender<Vec<UnboundedReceiver<Result<RawTransaction, String>>>>,
         )>,
         full_tx_scanner: UnboundedSender<(Transaction, BlockHeight)>,
+        network: &'static (impl Parameters + Sync),
     ) -> JoinHandle<Result<(), String>> {
         let keys = self.keys.clone();
 
@@ -113,7 +116,11 @@ impl FetchTaddrTxns {
                     }
                     prev_height = rtx.height;
 
-                    let tx = Transaction::read(&rtx.data[..]).map_err(|e| format!("Error reading Tx: {}", e))?;
+                    let tx = Transaction::read(
+                        &rtx.data[..],
+                        BranchId::for_height(network, BlockHeight::from_u32(rtx.height as u32)),
+                    )
+                    .map_err(|e| format!("Error reading Tx: {}", e))?;
                     full_tx_scanner
                         .send((tx, BlockHeight::from_u32(rtx.height as u32)))
                         .unwrap();
@@ -144,9 +151,10 @@ mod test {
     use tokio::sync::oneshot::{self};
     use tokio::sync::RwLock;
     use tokio::{sync::mpsc::unbounded_channel, task::JoinHandle};
-    use zcash_primitives::consensus::BlockHeight;
+    use zcash_primitives::consensus::{BlockHeight, TEST_NETWORK};
 
     use crate::compact_formats::RawTransaction;
+    use crate::lightclient::faketx;
     use zcash_primitives::transaction::{Transaction, TransactionData};
 
     use crate::lightwallet::keys::Keys;
@@ -184,17 +192,17 @@ mod test {
                     let mut rng = rand::thread_rng();
 
                     // Generate between 50 and 200 txns per taddr
-                    let num_txns = rng.gen_range(50, 200);
+                    let num_txns = rng.gen_range(50..200);
 
                     let mut rtxs = (0..num_txns)
                         .into_iter()
-                        .map(|_| rng.gen_range(1, 100))
+                        .map(|_| rng.gen_range(1..100))
                         .map(|h| {
                             let mut rtx = RawTransaction::default();
                             rtx.height = h;
 
                             let mut b = vec![];
-                            TransactionData::new().freeze().unwrap().write(&mut b).unwrap();
+                            faketx::new_transactiondata().freeze().unwrap().write(&mut b).unwrap();
                             rtx.data = b;
 
                             rtx
@@ -238,7 +246,9 @@ mod test {
             Ok(total)
         });
 
-        let h3 = ftt.start(100, 1, taddr_fetcher_tx, full_tx_scanner_tx).await;
+        let h3 = ftt
+            .start(100, 1, taddr_fetcher_tx, full_tx_scanner_tx, &TEST_NETWORK)
+            .await;
 
         let (total_sent, total_recieved) = join!(h1, h2);
         assert_eq!(total_sent.unwrap().unwrap(), total_recieved.unwrap().unwrap());

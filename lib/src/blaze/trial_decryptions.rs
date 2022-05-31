@@ -1,10 +1,23 @@
-use crate::{compact_formats::CompactBlock, lightwallet::{MemoDownloadOption, data::WalletTx, keys::Keys, wallet_txns::WalletTxns}};
+use crate::{
+    compact_formats::CompactBlock,
+    lightwallet::{data::WalletTx, keys::Keys, wallet_txns::WalletTxns, MemoDownloadOption},
+};
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
 use std::sync::Arc;
-use tokio::{sync::{RwLock, mpsc::{unbounded_channel, UnboundedSender}, oneshot}, task::JoinHandle};
+use tokio::{
+    sync::{
+        mpsc::{unbounded_channel, UnboundedSender},
+        oneshot, RwLock,
+    },
+    task::JoinHandle,
+};
 
-use zcash_primitives::{consensus::BlockHeight, note_encryption::try_sapling_compact_note_decryption, primitives::{Nullifier, SaplingIvk}, transaction::{Transaction, TxId}};
+use zcash_primitives::{
+    consensus::BlockHeight,
+    sapling::{note_encryption::try_sapling_compact_note_decryption, Nullifier, SaplingIvk},
+    transaction::{Transaction, TxId},
+};
 
 use super::syncdata::BlazeSyncData;
 
@@ -107,23 +120,12 @@ impl TrialDecryptions {
 
             for (tx_num, ctx) in cb.vtx.iter().enumerate() {
                 let mut wallet_tx = false;
-                
-                for (output_num, co) in ctx.outputs.iter().enumerate() {
-                    let cmu = co.cmu().map_err(|_| "No CMU".to_string())?;
-                    let epk = match co.epk() {
-                        Err(_) => continue,
-                        Ok(epk) => epk,
-                    };
 
+                for (output_num, co) in ctx.outputs.iter().enumerate() {
                     for (i, ivk) in ivks.iter().enumerate() {
-                        if let Some((note, to)) = try_sapling_compact_note_decryption(
-                            &config.get_params(),
-                            height,
-                            &ivk,
-                            &epk,
-                            &cmu,
-                            &co.ciphertext,
-                        ) {
+                        if let Some((note, to)) =
+                            try_sapling_compact_note_decryption(&config.get_params(), height, &ivk, co)
+                        {
                             wallet_tx = true;
 
                             let keys = keys.clone();
@@ -163,7 +165,7 @@ impl TrialDecryptions {
                                 );
 
                                 info!("Trial decrypt Detected txid {}", &txid);
-                                
+
                                 detected_txid_sender
                                     .send((txid, nullifier, height, Some(output_num as u32)))
                                     .unwrap();
@@ -187,7 +189,6 @@ impl TrialDecryptions {
                         // Discard the result, because this was not a wallet tx.
                         rx.await.unwrap().map(|_r| ())
                     }));
-                    
                 }
             }
         }

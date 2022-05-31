@@ -32,7 +32,7 @@ use tokio::{
 use zcash_client_backend::encoding::{decode_payment_address, encode_payment_address};
 use zcash_primitives::{
     block::BlockHash,
-    consensus::{BlockHeight, BranchId},
+    consensus::{BlockHeight, BranchId, MAIN_NETWORK, TEST_NETWORK},
     memo::{Memo, MemoBytes},
     transaction::{components::amount::DEFAULT_FEE, Transaction, TxId},
 };
@@ -1138,7 +1138,17 @@ impl LightClient {
                     let price = lc1.wallet.price.clone();
 
                     while let Some(rtx) = mempool_rx.recv().await {
-                        if let Ok(tx) = Transaction::read(&rtx.data[..]) {
+                        if let Ok(tx) = match config.chain_name.as_str() {
+                            "main" => Transaction::read(
+                                &rtx.data[..],
+                                BranchId::for_height(&MAIN_NETWORK, BlockHeight::from_u32(rtx.height as u32)),
+                            ),
+                            "test" => Transaction::read(
+                                &rtx.data[..],
+                                BranchId::for_height(&TEST_NETWORK, BlockHeight::from_u32(rtx.height as u32)),
+                            ),
+                            _ => panic!("Unrecognized network"),
+                        } {
                             let price = price.read().await.clone();
                             //info!("Mempool attempting to scan {}", tx.txid());
 
@@ -1263,7 +1273,7 @@ impl LightClient {
 
         // Re-read the last scanned height
         let last_scanned_height = self.wallet.last_scanned_height().await;
-        let batch_size = 500_000;
+        let batch_size = 300_000;
 
         let mut latest_block_batches = vec![];
         let mut prev = last_scanned_height;
@@ -1351,7 +1361,11 @@ impl LightClient {
             .await;
 
         // Full Tx GRPC fetcher
-        let (fulltx_fetcher_handle, fulltx_fetcher_tx) = grpc_connector.start_fulltx_fetcher().await;
+        let (fulltx_fetcher_handle, fulltx_fetcher_tx) = match self.config.chain_name.as_str() {
+            "main" => grpc_connector.start_fulltx_fetcher(&MAIN_NETWORK).await,
+            "test" => grpc_connector.start_fulltx_fetcher(&TEST_NETWORK).await,
+            _ => panic!("Unrecognized network"),
+        };
 
         // Transparent Transactions Fetcher
         let (taddr_fetcher_handle, taddr_fetcher_tx) = grpc_connector.start_taddr_txn_fetcher().await;
@@ -1392,9 +1406,31 @@ impl LightClient {
         let earliest_block = block_and_witness_handle.await.unwrap().unwrap();
 
         // 1. Fetch the transparent txns only after reorgs are done.
-        let taddr_txns_handle = FetchTaddrTxns::new(self.wallet.keys())
-            .start(start_block, earliest_block, taddr_fetcher_tx, fetch_taddr_txns_tx)
-            .await;
+        let taddr_txns_handle = match self.config.chain_name.as_str() {
+            "main" => {
+                FetchTaddrTxns::new(self.wallet.keys())
+                    .start(
+                        start_block,
+                        earliest_block,
+                        taddr_fetcher_tx,
+                        fetch_taddr_txns_tx,
+                        &MAIN_NETWORK,
+                    )
+                    .await
+            }
+            "test" => {
+                FetchTaddrTxns::new(self.wallet.keys())
+                    .start(
+                        start_block,
+                        earliest_block,
+                        taddr_fetcher_tx,
+                        fetch_taddr_txns_tx,
+                        &TEST_NETWORK,
+                    )
+                    .await
+            }
+            _ => panic!("Unrecognized network"),
+        };
 
         // 2. Notify the notes updater that the blocks are done updating
         blocks_done_tx.send(earliest_block).unwrap();
@@ -1486,7 +1522,6 @@ impl LightClient {
                 .get(0)
                 .map(|s| s.clone()))
             .unwrap();
-        let branch_id = self.consensus_branch_id().await;
 
         let result = {
             let _lock = self.sync_lock.lock().await;
@@ -1495,7 +1530,7 @@ impl LightClient {
             let prover = LocalTxProver::from_bytes(&sapling_spend, &sapling_output);
 
             self.wallet
-                .send_to_address(branch_id, prover, true, vec![(&addr, tbal - fee, None)], |txbytes| {
+                .send_to_address(prover, true, vec![(&addr, tbal - fee, None)], |txbytes| {
                     GrpcConnector::send_transaction(self.get_server_uri(), txbytes)
                 })
                 .await
@@ -1504,18 +1539,7 @@ impl LightClient {
         result.map(|(txid, _)| txid)
     }
 
-    async fn consensus_branch_id(&self) -> u32 {
-        let height = self.wallet.last_scanned_height().await;
-
-        let branch: BranchId = BranchId::for_height(&self.config.get_params(), BlockHeight::from_u32(height as u32));
-        let branch_id: u32 = u32::from(branch);
-
-        branch_id
-    }
-
     pub async fn do_send(&self, addrs: Vec<(&str, u64, Option<String>)>) -> Result<String, String> {
-        // First, get the concensus branch ID
-        let branch_id = self.consensus_branch_id().await;
         info!("Creating transaction");
 
         // println!("BranchID {:x}", branch_id);
@@ -1527,7 +1551,7 @@ impl LightClient {
             let prover = LocalTxProver::from_bytes(&sapling_spend, &sapling_output);
 
             self.wallet
-                .send_to_address(branch_id, prover, false, addrs, |txbytes| {
+                .send_to_address(prover, false, addrs, |txbytes| {
                     GrpcConnector::send_transaction(self.get_server_uri(), txbytes)
                 })
                 .await
@@ -1538,8 +1562,6 @@ impl LightClient {
 
     #[cfg(test)]
     pub async fn test_do_send(&self, addrs: Vec<(&str, u64, Option<String>)>) -> Result<String, String> {
-        // First, get the concensus branch ID
-        let branch_id = self.consensus_branch_id().await;
         info!("Creating transaction");
 
         let result = {
@@ -1547,7 +1569,7 @@ impl LightClient {
             let prover = crate::blaze::test_utils::FakeTxProver {};
 
             self.wallet
-                .send_to_address(branch_id, prover, false, addrs, |txbytes| {
+                .send_to_address(prover, false, addrs, |txbytes| {
                     GrpcConnector::send_transaction(self.get_server_uri(), txbytes)
                 })
                 .await
@@ -1562,3 +1584,6 @@ pub mod tests;
 
 #[cfg(test)]
 pub(crate) mod test_server;
+
+#[cfg(test)]
+pub(crate) mod faketx;

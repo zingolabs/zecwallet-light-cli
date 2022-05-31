@@ -21,6 +21,7 @@ use tonic::{
     transport::{Channel, Error},
     Request,
 };
+use zcash_primitives::consensus::{BlockHeight, BranchId, Parameters};
 use zcash_primitives::transaction::{Transaction, TxId};
 
 #[derive(Clone)]
@@ -124,6 +125,7 @@ impl GrpcConnector {
 
     pub async fn start_fulltx_fetcher(
         &self,
+        network: &'static (impl Parameters + Sync),
     ) -> (
         JoinHandle<()>,
         UnboundedSender<(TxId, oneshot::Sender<Result<Transaction, String>>)>,
@@ -136,7 +138,9 @@ impl GrpcConnector {
             while let Some((txid, result_tx)) = rx.recv().await {
                 let uri = uri.clone();
                 workers.push(tokio::spawn(async move {
-                    result_tx.send(Self::get_full_tx(uri.clone(), &txid).await).unwrap()
+                    result_tx
+                        .send(Self::get_full_tx(uri.clone(), &txid, network).await)
+                        .unwrap()
                 }));
 
                 // Do only 16 API calls in parallel, otherwise it might overflow OS's limit of
@@ -188,15 +192,19 @@ impl GrpcConnector {
         Ok(())
     }
 
-    async fn get_full_tx(uri: http::Uri, txid: &TxId) -> Result<Transaction, String> {
+    async fn get_full_tx(
+        uri: http::Uri,
+        txid: &TxId,
+        network: &'static (impl Parameters + Sync),
+    ) -> Result<Transaction, String> {
         let client = Arc::new(GrpcConnector::new(uri));
         let request = Request::new(TxFilter {
             block: None,
             index: 0,
-            hash: txid.0.to_vec(),
+            hash: txid.as_ref().to_vec(),
         });
 
-        // log::info!("Full fetching {}", txid);
+        log::info!("Full fetching {}", txid);
 
         let mut client = client
             .get_client()
@@ -205,7 +213,12 @@ impl GrpcConnector {
 
         let response = client.get_transaction(request).await.map_err(|e| format!("{}", e))?;
 
-        Transaction::read(&response.into_inner().data[..]).map_err(|e| format!("Error parsing Transaction: {}", e))
+        let height = response.get_ref().height as u32;
+        Transaction::read(
+            &response.into_inner().data[..],
+            BranchId::for_height(network, BlockHeight::from_u32(height)),
+        )
+        .map_err(|e| format!("Error parsing Transaction: {}", e))
     }
 
     async fn get_taddr_txns(

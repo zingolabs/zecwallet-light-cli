@@ -23,6 +23,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use zcash_primitives::block::BlockHash;
+use zcash_primitives::consensus::{BlockHeight, BranchId, TEST_NETWORK};
 use zcash_primitives::merkle_tree::CommitmentTree;
 use zcash_primitives::sapling::Node;
 use zcash_primitives::transaction::{Transaction, TxId};
@@ -113,12 +114,14 @@ pub async fn mine_pending_blocks(
     // Add all the t-addr spend's t-addresses into the maps, so the test grpc server
     // knows to serve this tx when the txns for this particular taddr are requested.
     for (t, _h, taddrs) in v.iter_mut() {
-        for vin in &t.vin {
-            let prev_txid = WalletTx::new_txid(&vin.prevout.hash().to_vec());
-            if let Some(wtx) = lc.wallet.txns.read().await.current.get(&prev_txid) {
-                if let Some(utxo) = wtx.utxos.iter().find(|u| u.output_index as u32 == vin.prevout.n()) {
-                    if !taddrs.contains(&utxo.address) {
-                        taddrs.push(utxo.address.clone());
+        if let Some(t_bundle) = t.transparent_bundle() {
+            for vin in &t_bundle.vin {
+                let prev_txid = WalletTx::new_txid(&vin.prevout.hash().to_vec());
+                if let Some(wtx) = lc.wallet.txns.read().await.current.get(&prev_txid) {
+                    if let Some(utxo) = wtx.utxos.iter().find(|u| u.output_index as u32 == vin.prevout.n()) {
+                        if !taddrs.contains(&utxo.address) {
+                            taddrs.push(utxo.address.clone());
+                        }
                     }
                 }
             }
@@ -210,7 +213,7 @@ impl TestGRPCService {
     }
 
     async fn wait_random() {
-        let msecs = OsRng.gen_range(0, 100);
+        let msecs = OsRng.gen_range(0..100);
         sleep(std::time::Duration::from_millis(msecs)).await;
     }
 }
@@ -298,7 +301,12 @@ impl CompactTxStreamer for TestGRPCService {
 
     async fn send_transaction(&self, request: Request<RawTransaction>) -> Result<Response<SendResponse>, Status> {
         let rtx = request.into_inner();
-        let txid = Transaction::read(&rtx.data[..]).unwrap().txid();
+        let txid = Transaction::read(
+            &rtx.data[..],
+            BranchId::for_height(&TEST_NETWORK, BlockHeight::from_u32(rtx.height as u32)),
+        )
+        .unwrap()
+        .txid();
 
         self.data.write().await.sent_txns.push(rtx);
         Ok(Response::new(SendResponse {

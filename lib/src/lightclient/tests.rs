@@ -1,8 +1,8 @@
 use ff::{Field, PrimeField};
 use group::GroupEncoding;
 use json::JsonValue;
-use jubjub::ExtendedPoint;
 use rand::rngs::OsRng;
+use rand::RngCore;
 use tempdir::TempDir;
 use tokio::runtime::Runtime;
 use tonic::transport::Channel;
@@ -12,16 +12,19 @@ use zcash_client_backend::address::RecipientAddress;
 use zcash_client_backend::encoding::{
     encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address,
 };
-use zcash_primitives::consensus::BlockHeight;
+use zcash_note_encryption::{EphemeralKeyBytes, NoteEncryption};
+use zcash_primitives::consensus::{BlockHeight, BranchId, TEST_NETWORK};
 use zcash_primitives::memo::Memo;
 use zcash_primitives::merkle_tree::{CommitmentTree, IncrementalWitness};
-use zcash_primitives::note_encryption::SaplingNoteEncryption;
-use zcash_primitives::primitives::{Note, Rseed, ValueCommitment};
-use zcash_primitives::redjubjub::Signature;
+use zcash_primitives::sapling::note_encryption::SaplingDomain;
+use zcash_primitives::sapling::redjubjub::Signature;
+use zcash_primitives::transaction::components::{sapling, Amount};
+
 use zcash_primitives::sapling::Node;
+use zcash_primitives::sapling::{Note, Rseed, ValueCommitment};
 use zcash_primitives::transaction::components::amount::DEFAULT_FEE;
 use zcash_primitives::transaction::components::{OutputDescription, GROTH_PROOF_SIZE};
-use zcash_primitives::transaction::{Transaction, TransactionData};
+use zcash_primitives::transaction::Transaction;
 use zcash_primitives::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey};
 
 use crate::blaze::fetch_full_tx::FetchFullTxns;
@@ -29,6 +32,7 @@ use crate::blaze::test_utils::{FakeCompactBlockList, FakeTransaction};
 use crate::compact_formats::compact_tx_streamer_client::CompactTxStreamerClient;
 
 use crate::compact_formats::{CompactOutput, CompactTx, Empty};
+use crate::lightclient::faketx::new_transactiondata;
 use crate::lightclient::test_server::{create_test_server, mine_pending_blocks, mine_random_blocks};
 use crate::lightclient::LightClient;
 use crate::lightwallet::data::WalletTx;
@@ -317,25 +321,33 @@ async fn multiple_incoming_same_tx() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Construct the Fake tx.
-    let to = extfvk1.default_address().unwrap().1;
+    let to = extfvk1.default_address().1;
 
     // Create fake note for the account
     let mut ctx = CompactTx::default();
-    let mut td = TransactionData::new();
+    let mut td = new_transactiondata();
 
     // Add 4 outputs
     for i in 0..4 {
         let mut rng = OsRng;
         let value = value + i;
+
+        let mut rseed_bytes = [0u8; 32];
+        rng.fill_bytes(&mut rseed_bytes);
+
         let note = Note {
             g_d: to.diversifier().g_d().unwrap(),
             pk_d: to.pk_d().clone(),
             value,
-            rseed: Rseed::BeforeZip212(jubjub::Fr::random(rng)),
+            rseed: Rseed::AfterZip212(rseed_bytes),
         };
 
-        let mut encryptor =
-            SaplingNoteEncryption::new(None, note.clone(), to.clone(), Memo::default().into(), &mut rng);
+        let encryptor = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(
+            None,
+            note.clone(),
+            to.clone(),
+            Memo::default().into(),
+        );
 
         let mut rng = OsRng;
         let rcv = jubjub::Fr::random(&mut rng);
@@ -348,9 +360,9 @@ async fn multiple_incoming_same_tx() {
         let od = OutputDescription {
             cv: cv.commitment().into(),
             cmu: note.cmu(),
-            ephemeral_key: ExtendedPoint::from(*encryptor.epk()),
+            ephemeral_key: EphemeralKeyBytes(encryptor.epk().to_bytes()),
             enc_ciphertext: encryptor.encrypt_note_plaintext(),
-            out_ciphertext: encryptor.encrypt_outgoing_plaintext(&cv.commitment().into(), &cmu),
+            out_ciphertext: encryptor.encrypt_outgoing_plaintext(&cv.commitment().into(), &cmu, &mut rng),
             zkproof: [0; GROTH_PROOF_SIZE],
         };
 
@@ -367,15 +379,30 @@ async fn multiple_incoming_same_tx() {
         cout.ciphertext = enc_ciphertext[..52].to_vec();
         ctx.outputs.push(cout);
 
-        td.shielded_outputs.push(od);
+        let mut sapling_bundle = if td.sapling_bundle.is_some() {
+            td.sapling_bundle().unwrap().clone()
+        } else {
+            sapling::Bundle {
+                shielded_spends: vec![],
+                shielded_outputs: vec![],
+                value_balance: Amount::zero(),
+                authorization: sapling::Authorized {
+                    binding_sig: Signature::read(&vec![0u8; 64][..]).expect("Signature error"),
+                },
+            }
+        };
+
+        sapling_bundle.shielded_outputs.push(od);
+        td.sapling_bundle = Some(sapling_bundle);
     }
 
-    td.binding_sig = Signature::read(&vec![0u8; 64][..]).ok();
+    // td.binding_sig = Signature::read(&vec![0u8; 64][..]).ok();
     let tx = td.freeze().unwrap();
-    ctx.hash = tx.txid().clone().0.to_vec();
+    let txid = tx.txid().to_string();
+    ctx.hash = tx.txid().as_ref().to_vec();
 
     // Add and mine the block
-    fcbl.txns.push((tx.clone(), fcbl.next_height, vec![]));
+    fcbl.txns.push((tx, fcbl.next_height, vec![]));
     fcbl.add_empty_block().add_txs(vec![ctx]);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
     assert_eq!(lc.wallet.last_scanned_height().await, 11);
@@ -404,7 +431,7 @@ async fn multiple_incoming_same_tx() {
         sorted_txns.sort_by_cached_key(|t| t["amount"].as_u64().unwrap());
 
         for i in 0..4 {
-            assert_eq!(sorted_txns[i]["txid"], tx.txid().to_string());
+            assert_eq!(sorted_txns[i]["txid"], txid);
             assert_eq!(sorted_txns[i]["block_height"].as_u64().unwrap(), 11);
             assert_eq!(
                 sorted_txns[i]["address"],
@@ -581,7 +608,7 @@ async fn z_incoming_viewkey() {
     // 2. Create a new Viewkey and import it
     let iextsk = ExtendedSpendingKey::master(&[1u8; 32]);
     let iextfvk = ExtendedFullViewingKey::from(&iextsk);
-    let iaddr = encode_payment_address(config.hrp_sapling_address(), &iextfvk.default_address().unwrap().1);
+    let iaddr = encode_payment_address(config.hrp_sapling_address(), &iextfvk.default_address().1);
     let addrs = lc
         .do_import_vk(
             encode_extended_full_viewing_key(config.hrp_sapling_viewing_key(), &iextfvk),
@@ -696,6 +723,7 @@ async fn t_incoming_t_outgoing() {
 
     // 5. Test the unconfirmed send.
     let list = lc.do_list_transactions(false).await;
+    println!("{}", list.pretty(2));
     assert_eq!(list[1]["block_height"].as_u64().unwrap(), 12);
     assert_eq!(list[1]["txid"], sent_txid);
     assert_eq!(
@@ -977,6 +1005,8 @@ async fn no_change() {
     ready_rx.await.unwrap();
 
     let lc = LightClient::test_new(&config, None, 0).await.unwrap();
+    lc.init_logging().unwrap();
+
     let mut fcbl = FakeCompactBlockList::new(0);
 
     // 1. Mine 10 blocks
@@ -989,6 +1019,9 @@ async fn no_change() {
     let (_ztx, _height, _) = fcbl.add_tx_paying(&extfvk1, zvalue);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
     mine_random_blocks(&mut fcbl, &data, &lc, 5).await;
+
+    let notes = lc.do_list_notes(true).await;
+    println!("{}", notes.pretty(2));
 
     // 3. Send an incoming t-address txn
     let sk = lc.wallet.keys().read().await.tkeys[0].clone();
@@ -1258,7 +1291,11 @@ async fn mempool_clearing() {
     let notes_before = lc.do_list_notes(true).await;
     let txns_before = lc.do_list_transactions(false).await;
 
-    let tx = Transaction::read(&sent_tx.data[..]).unwrap();
+    let tx = Transaction::read(
+        &sent_tx.data[..],
+        BranchId::for_height(&TEST_NETWORK, BlockHeight::from_u32(sent_tx.height as u32)),
+    )
+    .unwrap();
     FetchFullTxns::scan_full_tx(
         config,
         tx,
