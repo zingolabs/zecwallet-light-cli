@@ -48,9 +48,9 @@ group = "0.8"
 
 rust-embed = { version = "5.1.0", features = ["debug-embed"] }
 
-zcash_primitives = { git = "https://github.com/adityapk00/librustzcash", rev = "adeb3ec4ad15480482bc2962bc9fe453814db9ee", features = ["transparent-inputs"] }
-zcash_client_backend = { git = "https://github.com/adityapk00/librustzcash", rev = "adeb3ec4ad15480482bc2962bc9fe453814db9ee"}
-zcash_proofs = { git = "https://github.com/adityapk00/librustzcash", rev = "adeb3ec4ad15480482bc2962bc9fe453814db9ee", features = ["multicore"]}
+zcash_primitives = { git = "https://github.com/adityapk00/librustzcash", rev = "b70edf39e26e4c687b5087daf2ffd40f99fffd67", features = ["transparent-inputs"] }
+zcash_client_backend = { git = "https://github.com/adityapk00/librustzcash", rev = "b70edf39e26e4c687b5087daf2ffd40f99fffd67"}
+zcash_proofs = { git = "https://github.com/adityapk00/librustzcash", rev = "b70edf39e26e4c687b5087daf2ffd40f99fffd67", features = ["multicore"]}
 
 [dev-dependencies]
 portpicker = "0.1.0"

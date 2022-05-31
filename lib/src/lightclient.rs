@@ -1518,6 +1518,8 @@ impl LightClient {
         let branch_id = self.consensus_branch_id().await;
         info!("Creating transaction");
 
+        // println!("BranchID {:x}", branch_id);
+
         let result = {
             let _lock = self.sync_lock.lock().await;
             let (sapling_output, sapling_spend) = self.read_sapling_params()?;
