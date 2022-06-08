@@ -10,18 +10,19 @@ use tokio::{
     sync::{mpsc::UnboundedSender, RwLock},
     task::JoinHandle,
 };
+use zcash_primitives::consensus;
 use zcash_primitives::consensus::BlockHeight;
 
 use zcash_primitives::consensus::BranchId;
 use zcash_primitives::consensus::Parameters;
 use zcash_primitives::transaction::Transaction;
 
-pub struct FetchTaddrTxns {
-    keys: Arc<RwLock<Keys>>,
+pub struct FetchTaddrTxns<P> {
+    keys: Arc<RwLock<Keys<P>>>,
 }
 
-impl FetchTaddrTxns {
-    pub fn new(keys: Arc<RwLock<Keys>>) -> Self {
+impl<P: consensus::Parameters + Send + Sync + 'static> FetchTaddrTxns<P> {
+    pub fn new(keys: Arc<RwLock<Keys<P>>>) -> Self {
         Self { keys }
     }
 
@@ -34,7 +35,7 @@ impl FetchTaddrTxns {
             oneshot::Sender<Vec<UnboundedReceiver<Result<RawTransaction, String>>>>,
         )>,
         full_tx_scanner: UnboundedSender<(Transaction, BlockHeight)>,
-        network: &'static (impl Parameters + Sync),
+        network: P,
     ) -> JoinHandle<Result<(), String>> {
         let keys = self.keys.clone();
 
@@ -118,7 +119,7 @@ impl FetchTaddrTxns {
 
                     let tx = Transaction::read(
                         &rtx.data[..],
-                        BranchId::for_height(network, BlockHeight::from_u32(rtx.height as u32)),
+                        BranchId::for_height(&network, BlockHeight::from_u32(rtx.height as u32)),
                     )
                     .map_err(|e| format!("Error reading Tx: {}", e))?;
                     full_tx_scanner
@@ -155,7 +156,8 @@ mod test {
 
     use crate::compact_formats::RawTransaction;
     use crate::lightclient::faketx;
-    use zcash_primitives::transaction::{Transaction, TransactionData};
+    use crate::lightclient::lightclient_config::UnitTestNetwork;
+    use zcash_primitives::transaction::Transaction;
 
     use crate::lightwallet::keys::Keys;
     use crate::lightwallet::wallettkey::WalletTKey;
@@ -165,7 +167,7 @@ mod test {
     #[tokio::test]
     async fn out_of_order_txns() {
         // 5 t addresses
-        let mut keys = Keys::new_empty();
+        let mut keys = Keys::new_empty(UnitTestNetwork);
         let gened_taddrs: Vec<_> = (0..5).into_iter().map(|n| format!("taddr{}", n)).collect();
         keys.tkeys = gened_taddrs.iter().map(|ta| WalletTKey::empty(ta)).collect::<Vec<_>>();
 
@@ -247,7 +249,7 @@ mod test {
         });
 
         let h3 = ftt
-            .start(100, 1, taddr_fetcher_tx, full_tx_scanner_tx, &TEST_NETWORK)
+            .start(100, 1, taddr_fetcher_tx, full_tx_scanner_tx, UnitTestNetwork)
             .await;
 
         let (total_sent, total_recieved) = join!(h1, h2);

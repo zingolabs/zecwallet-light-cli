@@ -193,7 +193,7 @@ impl Message {
 
         match try_sapling_note_decryption(
             &MAIN_NETWORK,
-            BlockHeight::from_u32(1_000_000),
+            BlockHeight::from_u32(1_500_000),
             &ivk,
             &Unspendable {
                 cmu_bytes,

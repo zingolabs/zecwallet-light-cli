@@ -38,7 +38,7 @@ use crate::lightclient::LightClient;
 use crate::lightwallet::data::WalletTx;
 
 use super::checkpoints;
-use super::lightclient_config::LightClientConfig;
+use super::lightclient_config::{LightClientConfig, UnitTestNetwork};
 
 #[test]
 fn new_wallet_from_phrase() {
@@ -51,7 +51,7 @@ fn new_wallet_from_phrase() {
         .unwrap()
         .to_string();
 
-    let config = LightClientConfig::create_unconnected("main".to_string(), Some(data_dir));
+    let config = LightClientConfig::create_unconnected(UnitTestNetwork, Some(data_dir));
     let lc = LightClient::new_from_phrase(TEST_SEED.to_string(), &config, 0, false).unwrap();
 
     // The first t address and z address should be derived
@@ -81,7 +81,7 @@ fn new_wallet_from_sk() {
         .unwrap()
         .to_string();
 
-    let config = LightClientConfig::create_unconnected("main".to_string(), Some(data_dir));
+    let config = LightClientConfig::create_unconnected(UnitTestNetwork, Some(data_dir));
     let sk = "secret-extended-key-main1qvpa0qr8qqqqpqxn4l054nzxpxzp3a8r2djc7sekdek5upce8mc2j2z0arzps4zv940qeg706hd0wq6g5snzvhp332y6vhwyukdn8dhekmmsk7fzvzkqm6ypc99uy63tpesqwxhpre78v06cx8k5xpp9mrhtgqs5dvp68cqx2yrvthflmm2ynl8c0506dekul0f6jkcdmh0292lpphrksyc5z3pxwws97zd5els3l2mjt2s7hntap27mlmt6w0drtfmz36vz8pgu7ec0twfrq";
     let lc = LightClient::new_from_phrase(sk.to_string(), &config, 0, false).unwrap();
     Runtime::new().unwrap().block_on(async move {
@@ -116,7 +116,7 @@ fn new_wallet_from_vk() {
         .unwrap()
         .to_string();
 
-    let config = LightClientConfig::create_unconnected("main".to_string(), Some(data_dir));
+    let config = LightClientConfig::create_unconnected(UnitTestNetwork, Some(data_dir));
     let vk = "zxviews1qvpa0qr8qqqqpqxn4l054nzxpxzp3a8r2djc7sekdek5upce8mc2j2z0arzps4zv9kdvg28gjzvxd47ant6jn4svln5psw3htx93cq93ahw4e7lptrtlq7he5r6p6rcm3s0z6l24ype84sgqfrmghu449htrjspfv6qg2zfx2yrvthflmm2ynl8c0506dekul0f6jkcdmh0292lpphrksyc5z3pxwws97zd5els3l2mjt2s7hntap27mlmt6w0drtfmz36vz8pgu7ecrxzsls";
     let lc = LightClient::new_from_phrase(vk.to_string(), &config, 0, false).unwrap();
 
@@ -143,7 +143,7 @@ fn new_wallet_from_vk() {
 
 #[tokio::test]
 async fn basic_no_wallet_txns() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -169,7 +169,7 @@ async fn basic_no_wallet_txns() {
 
 #[tokio::test]
 async fn z_incoming_z_outgoing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -187,6 +187,8 @@ async fn z_incoming_z_outgoing() {
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
 
     assert_eq!(lc.wallet.last_scanned_height().await, 11);
+
+    println!("{}", lc.do_list_notes(true).await.pretty(2));
 
     // 3. Check the balance is correct, and we recieved the incoming tx from outside
     let b = lc.do_balance().await;
@@ -306,7 +308,7 @@ async fn z_incoming_z_outgoing() {
 
 #[tokio::test]
 async fn multiple_incoming_same_tx() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -476,7 +478,7 @@ async fn multiple_incoming_same_tx() {
 
 #[tokio::test]
 async fn z_incoming_multiz_outgoing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -532,7 +534,7 @@ async fn z_incoming_multiz_outgoing() {
 #[tokio::test]
 async fn z_to_z_scan_together() {
     // Create an incoming tx, and then send that tx, and scan everything together, to make sure it works.
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -593,7 +595,7 @@ async fn z_to_z_scan_together() {
 
 #[tokio::test]
 async fn z_incoming_viewkey() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -689,7 +691,7 @@ async fn z_incoming_viewkey() {
 
 #[tokio::test]
 async fn t_incoming_t_outgoing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -724,6 +726,7 @@ async fn t_incoming_t_outgoing() {
     // 5. Test the unconfirmed send.
     let list = lc.do_list_transactions(false).await;
     println!("{}", list.pretty(2));
+    println!("{}", lc.do_list_notes(true).await.pretty(2));
     assert_eq!(list[1]["block_height"].as_u64().unwrap(), 12);
     assert_eq!(list[1]["txid"], sent_txid);
     assert_eq!(
@@ -788,7 +791,7 @@ async fn t_incoming_t_outgoing() {
 
 #[tokio::test]
 async fn mixed_txn() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -890,7 +893,7 @@ async fn mixed_txn() {
 
 #[tokio::test]
 async fn aborted_resync() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1000,7 +1003,7 @@ async fn aborted_resync() {
 
 #[tokio::test]
 async fn no_change() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1061,7 +1064,7 @@ async fn no_change() {
 #[tokio::test]
 async fn recover_at_checkpoint() {
     // 1. Wait for test server to start
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
     ready_rx.await.unwrap();
 
     // Get checkpoint at 1220000
@@ -1146,7 +1149,7 @@ async fn recover_at_checkpoint() {
 
 #[tokio::test]
 async fn witness_clearing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1251,7 +1254,7 @@ async fn witness_clearing() {
 
 #[tokio::test]
 async fn mempool_clearing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1348,7 +1351,7 @@ async fn mempool_clearing() {
 
 #[tokio::test]
 async fn mempool_and_balance() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 

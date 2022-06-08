@@ -6,6 +6,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use sodiumoxide::crypto::secretbox;
 
 use zcash_encoding::{Optional, Vector};
+use zcash_primitives::consensus;
 use zcash_primitives::{
     sapling::PaymentAddress,
     zip32::{ExtendedFullViewingKey, ExtendedSpendingKey},
@@ -205,11 +206,16 @@ impl WalletZKey {
         Ok(())
     }
 
-    pub fn unlock(&mut self, config: &LightClientConfig, bip39_seed: &[u8], key: &secretbox::Key) -> io::Result<()> {
+    pub fn unlock<P: consensus::Parameters>(
+        &mut self,
+        config: &LightClientConfig<P>,
+        bip39_seed: &[u8],
+        key: &secretbox::Key,
+    ) -> io::Result<()> {
         match self.keytype {
             WalletZKeyType::HdKey => {
                 let (extsk, extfvk, address) =
-                    Keys::get_zaddr_from_bip39seed(&config, &bip39_seed, self.hdkey_num.unwrap());
+                    Keys::get_zaddr_from_bip39seed(config, &bip39_seed, self.hdkey_num.unwrap());
 
                 if address != self.zaddress {
                     return Err(io::Error::new(
@@ -319,16 +325,17 @@ pub mod tests {
     };
 
     use super::WalletZKey;
-    use crate::lightclient::lightclient_config::LightClientConfig;
+    use crate::lightclient::lightclient_config::{LightClientConfig, UnitTestNetwork};
 
-    fn get_config() -> LightClientConfig {
+    fn get_config() -> LightClientConfig<UnitTestNetwork> {
         LightClientConfig {
             server: "0.0.0.0:0".parse().unwrap(),
-            chain_name: "main".to_string(),
+            chain_name: "zs".to_string(),
             monitor_mempool: false,
             sapling_activation_height: 0,
             anchor_offset: [0u32; 5],
             data_dir: None,
+            params: UnitTestNetwork,
         }
     }
 

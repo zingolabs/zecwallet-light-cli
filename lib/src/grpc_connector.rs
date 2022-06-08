@@ -21,7 +21,7 @@ use tonic::{
     transport::{Channel, Error},
     Request,
 };
-use zcash_primitives::consensus::{BlockHeight, BranchId, Parameters};
+use zcash_primitives::consensus::{self, BlockHeight, BranchId};
 use zcash_primitives::transaction::{Transaction, TxId};
 
 #[derive(Clone)]
@@ -123,9 +123,9 @@ impl GrpcConnector {
         (h, tx)
     }
 
-    pub async fn start_fulltx_fetcher(
+    pub async fn start_fulltx_fetcher<P: consensus::Parameters + Send + Sync + 'static>(
         &self,
-        network: &'static (impl Parameters + Sync),
+        parameters: P,
     ) -> (
         JoinHandle<()>,
         UnboundedSender<(TxId, oneshot::Sender<Result<Transaction, String>>)>,
@@ -137,9 +137,10 @@ impl GrpcConnector {
             let mut workers = FuturesUnordered::new();
             while let Some((txid, result_tx)) = rx.recv().await {
                 let uri = uri.clone();
+                let parameters = parameters.clone();
                 workers.push(tokio::spawn(async move {
                     result_tx
-                        .send(Self::get_full_tx(uri.clone(), &txid, network).await)
+                        .send(Self::get_full_tx(uri.clone(), &txid, parameters).await)
                         .unwrap()
                 }));
 
@@ -192,10 +193,10 @@ impl GrpcConnector {
         Ok(())
     }
 
-    async fn get_full_tx(
+    async fn get_full_tx<P: consensus::Parameters + Send + Sync + 'static>(
         uri: http::Uri,
         txid: &TxId,
-        network: &'static (impl Parameters + Sync),
+        parameters: P,
     ) -> Result<Transaction, String> {
         let client = Arc::new(GrpcConnector::new(uri));
         let request = Request::new(TxFilter {
@@ -216,7 +217,7 @@ impl GrpcConnector {
         let height = response.get_ref().height as u32;
         Transaction::read(
             &response.into_inner().data[..],
-            BranchId::for_height(network, BlockHeight::from_u32(height)),
+            BranchId::for_height(&parameters, BlockHeight::from_u32(height)),
         )
         .map_err(|e| format!("Error parsing Transaction: {}", e))
     }

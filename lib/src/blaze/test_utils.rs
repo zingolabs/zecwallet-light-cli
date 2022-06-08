@@ -16,10 +16,10 @@ use secp256k1::PublicKey;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
-use zcash_note_encryption::{EphemeralKeyBytes, NoteEncryption, ShieldedOutput};
+use zcash_note_encryption::{EphemeralKeyBytes, NoteEncryption};
 use zcash_primitives::{
     block::BlockHash,
-    consensus::{BlockHeight, BranchId, TEST_NETWORK},
+    consensus::{self, BlockHeight, BranchId, TEST_NETWORK},
     constants::SPENDING_KEY_GENERATOR,
     keys::OutgoingViewingKey,
     legacy::{Script, TransparentAddress},
@@ -33,7 +33,7 @@ use zcash_primitives::{
     },
     sapling::{Diversifier, Note, Nullifier, PaymentAddress, ProofGenerationKey, Rseed, ValueCommitment},
     transaction::{
-        components::{transparent, Amount, OutPoint, OutputDescription, TxIn, TxOut, GROTH_PROOF_SIZE},
+        components::{sapling, transparent, Amount, OutPoint, OutputDescription, TxIn, TxOut, GROTH_PROOF_SIZE},
         Authorized, Transaction, TransactionData, TxId,
     },
     zip32::{ExtendedFullViewingKey, ExtendedSpendingKey},
@@ -143,7 +143,18 @@ impl FakeTransaction {
         cout.epk = epk;
         cout.ciphertext = enc_ciphertext[..52].to_vec();
 
-        let mut sapling_bundle = self.td.sapling_bundle().unwrap().clone();
+        let mut sapling_bundle = if self.td.sapling_bundle.is_some() {
+            self.td.sapling_bundle().unwrap().clone()
+        } else {
+            sapling::Bundle {
+                shielded_spends: vec![],
+                shielded_outputs: vec![],
+                value_balance: Amount::zero(),
+                authorization: sapling::Authorized {
+                    binding_sig: Signature::read(&vec![0u8; 64][..]).expect("Signature error"),
+                },
+            }
+        };
         sapling_bundle.shielded_outputs.push(od);
         self.td.sapling_bundle = Some(sapling_bundle);
 
@@ -322,7 +333,10 @@ impl FakeCompactBlockList {
         s
     }
 
-    pub async fn add_pending_sends(&mut self, data: &Arc<RwLock<TestServerData>>) {
+    pub async fn add_pending_sends<P: consensus::Parameters + Send + Sync + 'static>(
+        &mut self,
+        data: &Arc<RwLock<TestServerData<P>>>,
+    ) {
         let sent_txns = data.write().await.sent_txns.split_off(0);
 
         for rtx in sent_txns {

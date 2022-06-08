@@ -16,6 +16,7 @@ use zcash_client_backend::{
 };
 use zcash_encoding::Vector;
 use zcash_primitives::{
+    consensus,
     legacy::TransparentAddress,
     sapling::PaymentAddress,
     zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey},
@@ -91,9 +92,9 @@ impl FromBase58Check for str {
 
 // Manages all the keys in the wallet. Note that the RwLock for this is present in `lightwallet.rs`, so we'll
 // assume that this is already gone through a RwLock, so we don't lock any of the individual fields.
-pub struct Keys {
+pub struct Keys<P> {
     // TODO: This struct is duplicated with LightWallet and LightClient
-    config: LightClientConfig,
+    config: LightClientConfig<P>,
 
     // Is the wallet encrypted? If it is, then when writing to disk, the seed is always encrypted
     // and the individual spending keys are not written
@@ -117,14 +118,14 @@ pub struct Keys {
     pub(crate) tkeys: Vec<WalletTKey>,
 }
 
-impl Keys {
+impl<P: consensus::Parameters> Keys<P> {
     pub fn serialized_version() -> u64 {
         return 21;
     }
 
     #[cfg(test)]
-    pub fn new_empty() -> Self {
-        let config = LightClientConfig::create_unconnected("mainnet".to_string(), None);
+    pub fn new_empty(params: P) -> Self {
+        let config = LightClientConfig::create_unconnected(params, None);
         Self {
             config,
             encrypted: false,
@@ -137,7 +138,7 @@ impl Keys {
         }
     }
 
-    pub fn new(config: &LightClientConfig, seed_phrase: Option<String>, num_zaddrs: u32) -> Result<Self, String> {
+    pub fn new(config: &LightClientConfig<P>, seed_phrase: Option<String>, num_zaddrs: u32) -> Result<Self, String> {
         let mut seed_bytes = [0u8; 32];
 
         if seed_phrase.is_none() {
@@ -182,7 +183,7 @@ impl Keys {
         })
     }
 
-    pub fn read_old<R: Read>(version: u64, mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+    pub fn read_old<R: Read>(version: u64, mut reader: R, config: &LightClientConfig<P>) -> io::Result<Self> {
         let encrypted = if version >= 4 { reader.read_u8()? > 0 } else { false };
 
         let mut enc_seed = [0u8; 48];
@@ -307,7 +308,7 @@ impl Keys {
         })
     }
 
-    pub fn read<R: Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+    pub fn read<R: Read>(mut reader: R, config: &LightClientConfig<P>) -> io::Result<Self> {
         let version = reader.read_u64::<LittleEndian>()?;
         if version > Self::serialized_version() {
             let e = format!(
@@ -390,7 +391,7 @@ impl Keys {
         Ok(())
     }
 
-    pub fn config(&self) -> LightClientConfig {
+    pub fn config(&self) -> LightClientConfig<P> {
         self.config.clone()
     }
 
@@ -768,7 +769,7 @@ impl Keys {
     }
 
     pub fn get_zaddr_from_bip39seed(
-        config: &LightClientConfig,
+        config: &LightClientConfig<P>,
         bip39_seed: &[u8],
         pos: u32,
     ) -> (ExtendedSpendingKey, ExtendedFullViewingKey, PaymentAddress) {
@@ -788,7 +789,7 @@ impl Keys {
         (extsk, extfvk, address)
     }
 
-    pub fn is_shielded_address(addr: &String, config: &LightClientConfig) -> bool {
+    pub fn is_shielded_address(addr: &String, config: &LightClientConfig<P>) -> bool {
         match address::RecipientAddress::decode(&config.get_params(), addr) {
             Some(address::RecipientAddress::Shielded(_)) => true,
             _ => false,

@@ -6,6 +6,7 @@ use secp256k1::SecretKey;
 use sha2::Sha256;
 use sodiumoxide::crypto::secretbox;
 use zcash_encoding::{Optional, Vector};
+use zcash_primitives::consensus;
 
 use crate::{
     lightclient::lightclient_config::LightClientConfig,
@@ -39,7 +40,11 @@ pub struct WalletTKey {
 }
 
 impl WalletTKey {
-    pub fn get_taddr_from_bip39seed(config: &LightClientConfig, bip39_seed: &[u8], pos: u32) -> secp256k1::SecretKey {
+    pub fn get_taddr_from_bip39seed<P: consensus::Parameters>(
+        config: &LightClientConfig<P>,
+        bip39_seed: &[u8],
+        pos: u32,
+    ) -> secp256k1::SecretKey {
         assert_eq!(bip39_seed.len(), 64);
 
         let ext_t_key = ExtendedPrivKey::with_seed(bip39_seed).unwrap();
@@ -80,7 +85,7 @@ impl WalletTKey {
         }
     }
 
-    pub fn from_sk_string(config: &LightClientConfig, sks: String) -> io::Result<Self> {
+    pub fn from_sk_string<P: consensus::Parameters>(config: &LightClientConfig<P>, sks: String) -> io::Result<Self> {
         let (_v, mut bytes) = sks.as_str().from_base58check()?;
         let suffix = bytes.split_off(32);
 
@@ -106,7 +111,11 @@ impl WalletTKey {
         })
     }
 
-    pub fn new_hdkey(config: &LightClientConfig, hdkey_num: u32, bip39_seed: &[u8]) -> Self {
+    pub fn new_hdkey<P: consensus::Parameters>(
+        config: &LightClientConfig<P>,
+        hdkey_num: u32,
+        bip39_seed: &[u8],
+    ) -> Self {
         let pos = hdkey_num;
 
         let sk = Self::get_taddr_from_bip39seed(&config, bip39_seed, pos);
@@ -124,7 +133,7 @@ impl WalletTKey {
     }
 
     // Return the wallet string representation of a secret key
-    pub fn sk_as_string(&self, config: &LightClientConfig) -> io::Result<String> {
+    pub fn sk_as_string<P: consensus::Parameters>(&self, config: &LightClientConfig<P>) -> io::Result<String> {
         if self.key.is_none() {
             return Err(io::Error::new(ErrorKind::NotFound, "Wallet locked"));
         }
@@ -246,7 +255,12 @@ impl WalletTKey {
         Ok(())
     }
 
-    pub fn unlock(&mut self, config: &LightClientConfig, bip39_seed: &[u8], key: &secretbox::Key) -> io::Result<()> {
+    pub fn unlock<P: consensus::Parameters>(
+        &mut self,
+        config: &LightClientConfig<P>,
+        bip39_seed: &[u8],
+        key: &secretbox::Key,
+    ) -> io::Result<()> {
         match self.keytype {
             WalletTKeyType::HdKey => {
                 let sk = Self::get_taddr_from_bip39seed(&config, &bip39_seed, self.hdkey_num.unwrap());
@@ -337,13 +351,13 @@ mod test {
     use rand::{rngs::OsRng, Rng};
     use secp256k1::SecretKey;
 
-    use crate::lightclient::lightclient_config::LightClientConfig;
+    use crate::lightclient::lightclient_config::{LightClientConfig, UnitTestNetwork};
 
     use super::WalletTKey;
 
     #[test]
     fn tkey_encode_decode() {
-        let config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
 
         for _i in 0..10 {
             let mut b = [0u8; 32];

@@ -32,7 +32,7 @@ use tokio::{
 use zcash_client_backend::encoding::{decode_payment_address, encode_payment_address};
 use zcash_primitives::{
     block::BlockHash,
-    consensus::{BlockHeight, BranchId, MAIN_NETWORK, TEST_NETWORK},
+    consensus::{self, BlockHeight, BranchId},
     memo::{Memo, MemoBytes},
     transaction::{components::amount::DEFAULT_FEE, Transaction, TxId},
 };
@@ -58,9 +58,9 @@ impl WalletStatus {
     }
 }
 
-pub struct LightClient {
-    pub(crate) config: LightClientConfig,
-    pub(crate) wallet: LightWallet,
+pub struct LightClient<P> {
+    pub(crate) config: LightClientConfig<P>,
+    pub(crate) wallet: LightWallet<P>,
 
     mempool_monitor: std::sync::RwLock<Option<std::thread::JoinHandle<()>>>,
 
@@ -69,10 +69,10 @@ pub struct LightClient {
     bsync_data: Arc<RwLock<BlazeSyncData>>,
 }
 
-impl LightClient {
+impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
     /// Method to create a test-only version of the LightClient
     #[allow(dead_code)]
-    pub async fn test_new(config: &LightClientConfig, seed_phrase: Option<String>, height: u64) -> io::Result<Self> {
+    pub async fn test_new(config: &LightClientConfig<P>, seed_phrase: Option<String>, height: u64) -> io::Result<Self> {
         if seed_phrase.is_some() && config.wallet_exists() {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
@@ -169,13 +169,20 @@ impl LightClient {
         match self.config.get_zcash_params_path() {
             Ok(zcash_params_dir) => {
                 // Create the sapling output and spend params files
-                match LightClient::write_file_if_not_exists(&zcash_params_dir, "sapling-output.params", &sapling_output)
-                {
+                match LightClient::<P>::write_file_if_not_exists(
+                    &zcash_params_dir,
+                    "sapling-output.params",
+                    &sapling_output,
+                ) {
                     Ok(_) => {}
                     Err(e) => return Err(format!("Warning: Couldn't write the output params!\n{}", e)),
                 };
 
-                match LightClient::write_file_if_not_exists(&zcash_params_dir, "sapling-spend.params", &sapling_spend) {
+                match LightClient::<P>::write_file_if_not_exists(
+                    &zcash_params_dir,
+                    "sapling-spend.params",
+                    &sapling_spend,
+                ) {
                     Ok(_) => {}
                     Err(e) => return Err(format!("Warning: Couldn't write the spend params!\n{}", e)),
                 }
@@ -202,7 +209,7 @@ impl LightClient {
         };
     }
 
-    fn new_wallet(config: &LightClientConfig, latest_block: u64, num_zaddrs: u32) -> io::Result<Self> {
+    fn new_wallet(config: &LightClientConfig<P>, latest_block: u64, num_zaddrs: u32) -> io::Result<Self> {
         Runtime::new().unwrap().block_on(async move {
             let l = LightClient {
                 wallet: LightWallet::new(config.clone(), None, latest_block, num_zaddrs)?,
@@ -228,7 +235,7 @@ impl LightClient {
 
     /// Create a brand new wallet with a new seed phrase. Will fail if a wallet file
     /// already exists on disk
-    pub fn new(config: &LightClientConfig, latest_block: u64) -> io::Result<Self> {
+    pub fn new(config: &LightClientConfig<P>, latest_block: u64) -> io::Result<Self> {
         #[cfg(all(not(target_os = "ios"), not(target_os = "android")))]
         {
             if config.wallet_exists() {
@@ -244,7 +251,7 @@ impl LightClient {
 
     pub fn new_from_phrase(
         seed_phrase: String,
-        config: &LightClientConfig,
+        config: &LightClientConfig<P>,
         birthday: u64,
         overwrite: bool,
     ) -> io::Result<Self> {
@@ -295,7 +302,7 @@ impl LightClient {
         lr
     }
 
-    pub fn read_from_buffer<R: Read>(config: &LightClientConfig, mut reader: R) -> io::Result<Self> {
+    pub fn read_from_buffer<R: Read>(config: &LightClientConfig<P>, mut reader: R) -> io::Result<Self> {
         let l = Runtime::new().unwrap().block_on(async move {
             let wallet = LightWallet::read(&mut reader, config).await?;
 
@@ -316,7 +323,7 @@ impl LightClient {
         l
     }
 
-    pub fn read_from_disk(config: &LightClientConfig) -> io::Result<Self> {
+    pub fn read_from_disk(config: &LightClientConfig<P>) -> io::Result<Self> {
         let wallet_path = if config.wallet_exists() {
             config.get_wallet_path()
         } else {
@@ -643,7 +650,7 @@ impl LightClient {
                         if !all_notes && nd.spent.is_some() {
                             None
                         } else {
-                            let address = LightWallet::note_address(self.config.hrp_sapling_address(), nd);
+                            let address = LightWallet::<P>::note_address(self.config.hrp_sapling_address(), nd);
                             let spendable = address.is_some() &&
                                                     spendable_address.contains(&address.clone().unwrap()) &&
                                                     wtx.block <= anchor_height && nd.spent.is_none() && nd.unconfirmed_spent.is_none();
@@ -759,7 +766,7 @@ impl LightClient {
                 let memo_bytes: MemoBytes = m.memo.clone().into();
                 object! {
                     "to" => encode_payment_address(self.config.hrp_sapling_address(), &m.to),
-                    "memo" => LightWallet::memo_str(Some(m.memo)),
+                    "memo" => LightWallet::<P>::memo_str(Some(m.memo)),
                     "memohex" => hex::encode(memo_bytes.as_slice())
                 }
             }
@@ -805,7 +812,7 @@ impl LightClient {
                             let mut o = object! {
                                 "address" => om.address.clone(),
                                 "value"   => om.value,
-                                "memo"    => LightWallet::memo_str(Some(om.memo.clone()))
+                                "memo"    => LightWallet::<P>::memo_str(Some(om.memo.clone()))
                             };
 
                             if include_memo_hex {
@@ -842,8 +849,8 @@ impl LightClient {
                         "txid"         => format!("{}", v.txid),
                         "amount"       => nd.note.value as i64,
                         "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
-                        "address"      => LightWallet::note_address(self.config.hrp_sapling_address(), nd),
-                        "memo"         => LightWallet::memo_str(nd.memo.clone())
+                        "address"      => LightWallet::<P>::note_address(self.config.hrp_sapling_address(), nd),
+                        "memo"         => LightWallet::<P>::memo_str(nd.memo.clone())
                     };
 
                     if include_memo_hex {
@@ -1110,7 +1117,7 @@ impl LightClient {
         self.bsync_data.read().await.sync_status.read().await.clone()
     }
 
-    pub fn start_mempool_monitor(lc: Arc<LightClient>) {
+    pub fn start_mempool_monitor(lc: Arc<LightClient<P>>) {
         if !lc.config.monitor_mempool {
             return;
         }
@@ -1120,6 +1127,7 @@ impl LightClient {
         }
 
         let config = lc.config.clone();
+        let parameters = config.get_params();
         let uri = config.server.clone();
         let lci = lc.clone();
 
@@ -1138,21 +1146,14 @@ impl LightClient {
                     let price = lc1.wallet.price.clone();
 
                     while let Some(rtx) = mempool_rx.recv().await {
-                        if let Ok(tx) = match config.chain_name.as_str() {
-                            "main" => Transaction::read(
-                                &rtx.data[..],
-                                BranchId::for_height(&MAIN_NETWORK, BlockHeight::from_u32(rtx.height as u32)),
-                            ),
-                            "test" => Transaction::read(
-                                &rtx.data[..],
-                                BranchId::for_height(&TEST_NETWORK, BlockHeight::from_u32(rtx.height as u32)),
-                            ),
-                            _ => panic!("Unrecognized network"),
-                        } {
+                        if let Ok(tx) = Transaction::read(
+                            &rtx.data[..],
+                            BranchId::for_height(&parameters, BlockHeight::from_u32(rtx.height as u32)),
+                        ) {
                             let price = price.read().await.clone();
                             //info!("Mempool attempting to scan {}", tx.txid());
 
-                            FetchFullTxns::scan_full_tx(
+                            FetchFullTxns::<P>::scan_full_tx(
                                 config.clone(),
                                 tx,
                                 BlockHeight::from_u32(rtx.height as u32),
@@ -1361,11 +1362,8 @@ impl LightClient {
             .await;
 
         // Full Tx GRPC fetcher
-        let (fulltx_fetcher_handle, fulltx_fetcher_tx) = match self.config.chain_name.as_str() {
-            "main" => grpc_connector.start_fulltx_fetcher(&MAIN_NETWORK).await,
-            "test" => grpc_connector.start_fulltx_fetcher(&TEST_NETWORK).await,
-            _ => panic!("Unrecognized network"),
-        };
+        let params = self.config.get_params();
+        let (fulltx_fetcher_handle, fulltx_fetcher_tx) = grpc_connector.start_fulltx_fetcher(params).await;
 
         // Transparent Transactions Fetcher
         let (taddr_fetcher_handle, taddr_fetcher_tx) = grpc_connector.start_taddr_txn_fetcher().await;
@@ -1404,33 +1402,18 @@ impl LightClient {
         // We wait first for the node's to be updated. This is where reorgs will be handled, so all the steps done after this phase will
         // assume that the reorgs are done.
         let earliest_block = block_and_witness_handle.await.unwrap().unwrap();
+        let params = self.config.get_params();
 
         // 1. Fetch the transparent txns only after reorgs are done.
-        let taddr_txns_handle = match self.config.chain_name.as_str() {
-            "main" => {
-                FetchTaddrTxns::new(self.wallet.keys())
-                    .start(
-                        start_block,
-                        earliest_block,
-                        taddr_fetcher_tx,
-                        fetch_taddr_txns_tx,
-                        &MAIN_NETWORK,
-                    )
-                    .await
-            }
-            "test" => {
-                FetchTaddrTxns::new(self.wallet.keys())
-                    .start(
-                        start_block,
-                        earliest_block,
-                        taddr_fetcher_tx,
-                        fetch_taddr_txns_tx,
-                        &TEST_NETWORK,
-                    )
-                    .await
-            }
-            _ => panic!("Unrecognized network"),
-        };
+        let taddr_txns_handle = FetchTaddrTxns::new(self.wallet.keys())
+            .start(
+                start_block,
+                earliest_block,
+                taddr_fetcher_tx,
+                fetch_taddr_txns_tx,
+                params,
+            )
+            .await;
 
         // 2. Notify the notes updater that the blocks are done updating
         blocks_done_tx.send(earliest_block).unwrap();

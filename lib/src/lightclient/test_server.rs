@@ -23,17 +23,20 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use zcash_primitives::block::BlockHash;
-use zcash_primitives::consensus::{BlockHeight, BranchId, TEST_NETWORK};
+use zcash_primitives::consensus;
+use zcash_primitives::consensus::{BlockHeight, BranchId};
 use zcash_primitives::merkle_tree::CommitmentTree;
 use zcash_primitives::sapling::Node;
 use zcash_primitives::transaction::{Transaction, TxId};
 
-use super::lightclient_config::LightClientConfig;
+use super::lightclient_config::{LightClientConfig, UnitTestNetwork};
 use super::LightClient;
 
-pub async fn create_test_server() -> (
-    Arc<RwLock<TestServerData>>,
-    LightClientConfig,
+pub async fn create_test_server<P: consensus::Parameters + Send + Sync + 'static>(
+    params: P,
+) -> (
+    Arc<RwLock<TestServerData<P>>>,
+    LightClientConfig<P>,
     oneshot::Receiver<bool>,
     oneshot::Sender<bool>,
     JoinHandle<()>,
@@ -46,7 +49,7 @@ pub async fn create_test_server() -> (
     let uri = format!("http://{}", server_port);
     let addr = server_port.parse().unwrap();
 
-    let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+    let mut config = LightClientConfig::create_unconnected(params, None);
     config.server = uri.parse().unwrap();
 
     let (service, data) = TestGRPCService::new(config.clone());
@@ -89,10 +92,10 @@ pub async fn create_test_server() -> (
     (data, config, ready_rx, stop_tx, h1)
 }
 
-pub async fn mine_random_blocks(
+pub async fn mine_random_blocks<P: consensus::Parameters + Send + Sync + 'static>(
     fcbl: &mut FakeCompactBlockList,
-    data: &Arc<RwLock<TestServerData>>,
-    lc: &LightClient,
+    data: &Arc<RwLock<TestServerData<P>>>,
+    lc: &LightClient<P>,
     num: u64,
 ) {
     let cbs = fcbl.add_blocks(num).into_compact_blocks();
@@ -101,12 +104,13 @@ pub async fn mine_random_blocks(
     lc.do_sync(true).await.unwrap();
 }
 
-pub async fn mine_pending_blocks(
+pub async fn mine_pending_blocks<P: consensus::Parameters + Send + Sync + 'static>(
     fcbl: &mut FakeCompactBlockList,
-    data: &Arc<RwLock<TestServerData>>,
-    lc: &LightClient,
+    data: &Arc<RwLock<TestServerData<P>>>,
+    lc: &LightClient<P>,
 ) {
     let cbs = fcbl.into_compact_blocks();
+    println!("mining pending block {}", cbs[0].vtx[0].outputs.len());
 
     data.write().await.add_blocks(cbs.clone());
     let mut v = fcbl.into_txns();
@@ -134,17 +138,17 @@ pub async fn mine_pending_blocks(
 }
 
 #[derive(Debug)]
-pub struct TestServerData {
+pub struct TestServerData<P> {
     pub blocks: Vec<CompactBlock>,
     pub txns: HashMap<TxId, (Vec<String>, RawTransaction)>,
     pub sent_txns: Vec<RawTransaction>,
-    pub config: LightClientConfig,
+    pub config: LightClientConfig<P>,
     pub zec_price: f64,
     pub tree_states: Vec<(u64, String, String)>,
 }
 
-impl TestServerData {
-    pub fn new(config: LightClientConfig) -> Self {
+impl<P: consensus::Parameters> TestServerData<P> {
+    pub fn new(config: LightClientConfig<P>) -> Self {
         let data = Self {
             blocks: vec![],
             txns: HashMap::new(),
@@ -200,12 +204,12 @@ impl TestServerData {
 }
 
 #[derive(Debug)]
-pub struct TestGRPCService {
-    data: Arc<RwLock<TestServerData>>,
+pub struct TestGRPCService<P> {
+    data: Arc<RwLock<TestServerData<P>>>,
 }
 
-impl TestGRPCService {
-    pub fn new(config: LightClientConfig) -> (Self, Arc<RwLock<TestServerData>>) {
+impl<P: consensus::Parameters> TestGRPCService<P> {
+    pub fn new(config: LightClientConfig<P>) -> (Self, Arc<RwLock<TestServerData<P>>>) {
         let data = Arc::new(RwLock::new(TestServerData::new(config)));
         let s = Self { data: data.clone() };
 
@@ -219,7 +223,7 @@ impl TestGRPCService {
 }
 
 #[tonic::async_trait]
-impl CompactTxStreamer for TestGRPCService {
+impl<P: consensus::Parameters + Send + Sync + 'static> CompactTxStreamer for TestGRPCService<P> {
     async fn get_latest_block(&self, _request: Request<ChainSpec>) -> Result<Response<BlockId>, Status> {
         Self::wait_random().await;
 
@@ -303,7 +307,7 @@ impl CompactTxStreamer for TestGRPCService {
         let rtx = request.into_inner();
         let txid = Transaction::read(
             &rtx.data[..],
-            BranchId::for_height(&TEST_NETWORK, BlockHeight::from_u32(rtx.height as u32)),
+            BranchId::for_height(&UnitTestNetwork, BlockHeight::from_u32(rtx.height as u32)),
         )
         .unwrap()
         .txid();

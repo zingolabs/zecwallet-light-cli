@@ -5,13 +5,14 @@ use crate::{
 };
 use log::info;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use zcash_primitives::consensus;
 
-pub struct FetchCompactBlocks {
-    config: LightClientConfig,
+pub struct FetchCompactBlocks<P> {
+    config: LightClientConfig<P>,
 }
 
-impl FetchCompactBlocks {
-    pub fn new(config: &LightClientConfig) -> Self {
+impl<P: consensus::Parameters> FetchCompactBlocks<P> {
+    pub fn new(config: &LightClientConfig<P>) -> Self {
         Self { config: config.clone() }
     }
 

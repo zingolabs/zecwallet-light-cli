@@ -26,10 +26,11 @@ use zcash_client_backend::{
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, encode_payment_address},
 };
 use zcash_encoding::{Optional, Vector};
+use zcash_primitives::consensus;
 use zcash_primitives::memo::MemoBytes;
 use zcash_primitives::sapling::prover::TxProver;
 use zcash_primitives::{
-    consensus::{BlockHeight},
+    consensus::BlockHeight,
     legacy::Script,
     memo::Memo,
     transaction::{
@@ -142,9 +143,9 @@ impl WalletOptions {
     }
 }
 
-pub struct LightWallet {
+pub struct LightWallet<P> {
     // All the keys in the wallet
-    keys: Arc<RwLock<Keys>>,
+    keys: Arc<RwLock<Keys<P>>>,
 
     // The block at which this wallet was born. Rescans
     // will start from here.
@@ -160,7 +161,7 @@ pub struct LightWallet {
     pub(crate) wallet_options: Arc<RwLock<WalletOptions>>,
 
     // Non-serialized fields
-    config: LightClientConfig,
+    config: LightClientConfig<P>,
 
     // Heighest verified block
     pub(crate) verified_tree: Arc<RwLock<Option<TreeState>>>,
@@ -172,13 +173,13 @@ pub struct LightWallet {
     pub price: Arc<RwLock<WalletZecPriceInfo>>,
 }
 
-impl LightWallet {
+impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
     pub fn serialized_version() -> u64 {
         return 24;
     }
 
     pub fn new(
-        config: LightClientConfig,
+        config: LightClientConfig<P>,
         seed_phrase: Option<String>,
         height: u64,
         num_zaddrs: u32,
@@ -198,7 +199,7 @@ impl LightWallet {
         })
     }
 
-    pub async fn read<R: Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+    pub async fn read<R: Read>(mut reader: R, config: &LightClientConfig<P>) -> io::Result<Self> {
         let version = reader.read_u64::<LittleEndian>()?;
         if version > Self::serialized_version() {
             let e = format!(
@@ -358,7 +359,7 @@ impl LightWallet {
         });
     }
 
-    pub fn keys(&self) -> Arc<RwLock<Keys>> {
+    pub fn keys(&self) -> Arc<RwLock<Keys<P>>> {
         self.keys.clone()
     }
 
@@ -1037,9 +1038,9 @@ impl LightWallet {
         (vec![], vec![], Amount::zero())
     }
 
-    pub async fn send_to_address<F, Fut, P: TxProver>(
+    pub async fn send_to_address<F, Fut, PR: TxProver>(
         &self,
-        prover: P,
+        prover: PR,
         transparent_only: bool,
         tos: Vec<(&str, u64, Option<String>)>,
         broadcast_fn: F,
@@ -1067,9 +1068,9 @@ impl LightWallet {
         }
     }
 
-    async fn send_to_address_internal<F, Fut, P: TxProver>(
+    async fn send_to_address_internal<F, Fut, PR: TxProver>(
         &self,
-        prover: P,
+        prover: PR,
         transparent_only: bool,
         tos: Vec<(&str, u64, Option<String>)>,
         broadcast_fn: F,
@@ -1123,7 +1124,8 @@ impl LightWallet {
         };
 
         let (progress_notifier, progress_notifier_rx) = mpsc::channel();
-        let mut builder = Builder::new(self.config.get_params().clone(), target_height);
+        // TODO: Target height
+        let mut builder = Builder::new(self.config.get_params().clone(), BlockHeight::from_u32(1_695_000));
         builder.with_progress_notifier(progress_notifier);
 
         // Create a map from address -> sk for all taddrs, so we can spend from the
@@ -1321,7 +1323,7 @@ impl LightWallet {
         {
             let price = self.price.read().await.clone();
 
-            FetchFullTxns::scan_full_tx(
+            FetchFullTxns::<P>::scan_full_tx(
                 self.config.clone(),
                 tx,
                 target_height.into(),
@@ -1361,6 +1363,7 @@ mod test {
     use crate::{
         blaze::test_utils::{incw_to_string, FakeCompactBlockList, FakeTransaction},
         lightclient::{
+            lightclient_config::UnitTestNetwork,
             test_server::{create_test_server, mine_pending_blocks, mine_random_blocks},
             LightClient,
         },
@@ -1368,7 +1371,7 @@ mod test {
 
     #[tokio::test]
     async fn z_t_note_selection() {
-        let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+        let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
         ready_rx.await.unwrap();
 
         let mut lc = LightClient::test_new(&config, None, 0).await.unwrap();
@@ -1494,7 +1497,7 @@ mod test {
 
     #[tokio::test]
     async fn multi_z_note_selection() {
-        let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+        let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
         ready_rx.await.unwrap();
 
         let mut lc = LightClient::test_new(&config, None, 0).await.unwrap();

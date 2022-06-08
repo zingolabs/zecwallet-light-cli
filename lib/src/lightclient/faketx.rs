@@ -1,6 +1,4 @@
 use zcash_primitives::consensus::BranchId;
-use zcash_primitives::sapling::redjubjub::Signature;
-use zcash_primitives::transaction::components::{sapling, Amount};
 use zcash_primitives::transaction::{Authorized, TransactionData, TxVersion};
 
 // Create a fake tx data

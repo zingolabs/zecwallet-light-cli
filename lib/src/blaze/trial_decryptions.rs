@@ -14,20 +14,20 @@ use tokio::{
 };
 
 use zcash_primitives::{
-    consensus::BlockHeight,
+    consensus::{self, BlockHeight},
     sapling::{note_encryption::try_sapling_compact_note_decryption, Nullifier, SaplingIvk},
     transaction::{Transaction, TxId},
 };
 
 use super::syncdata::BlazeSyncData;
 
-pub struct TrialDecryptions {
-    keys: Arc<RwLock<Keys>>,
+pub struct TrialDecryptions<P> {
+    keys: Arc<RwLock<Keys<P>>>,
     wallet_txns: Arc<RwLock<WalletTxns>>,
 }
 
-impl TrialDecryptions {
-    pub fn new(keys: Arc<RwLock<Keys>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
+impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
+    pub fn new(keys: Arc<RwLock<Keys<P>>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
         Self { keys, wallet_txns }
     }
 
@@ -102,7 +102,7 @@ impl TrialDecryptions {
 
     async fn trial_decrypt_batch(
         cbs: Vec<CompactBlock>,
-        keys: Arc<RwLock<Keys>>,
+        keys: Arc<RwLock<Keys<P>>>,
         bsync_data: Arc<RwLock<BlazeSyncData>>,
         ivks: Arc<Vec<SaplingIvk>>,
         wallet_txns: Arc<RwLock<WalletTxns>>,

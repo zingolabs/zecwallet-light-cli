@@ -2,7 +2,10 @@ use log::error;
 use zecwallet_cli::{
     attempt_recover_seed, configure_clapapp, report_permission_error, start_interactive, startup, version::VERSION,
 };
-use zecwalletlitelib::lightclient::{self, lightclient_config::LightClientConfig};
+use zecwalletlitelib::{
+    lightclient::{self, lightclient_config::LightClientConfig},
+    MainNetwork,
+};
 
 pub fn main() {
     // Get command line arguments
@@ -44,7 +47,7 @@ pub fn main() {
         }
     };
 
-    let server = LightClientConfig::get_server_or_default(maybe_server);
+    let server = LightClientConfig::<MainNetwork>::get_server_or_default(maybe_server);
 
     // Test to make sure the server has all of scheme, host and port
     if server.scheme_str().is_none() || server.host().is_none() || server.port().is_none() {

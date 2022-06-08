@@ -28,7 +28,7 @@ use tokio::{
 use zcash_client_backend::encoding::encode_payment_address;
 
 use zcash_primitives::{
-    consensus::BlockHeight,
+    consensus::{self, BlockHeight},
     legacy::TransparentAddress,
     memo::Memo,
     sapling::note_encryption::{try_sapling_note_decryption, try_sapling_output_recovery},
@@ -37,14 +37,18 @@ use zcash_primitives::{
 
 use super::syncdata::BlazeSyncData;
 
-pub struct FetchFullTxns {
-    config: LightClientConfig,
-    keys: Arc<RwLock<Keys>>,
+pub struct FetchFullTxns<P> {
+    config: LightClientConfig<P>,
+    keys: Arc<RwLock<Keys<P>>>,
     wallet_txns: Arc<RwLock<WalletTxns>>,
 }
 
-impl FetchFullTxns {
-    pub fn new(config: &LightClientConfig, keys: Arc<RwLock<Keys>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
+impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
+    pub fn new(
+        config: &LightClientConfig<P>,
+        keys: Arc<RwLock<Keys<P>>>,
+        wallet_txns: Arc<RwLock<WalletTxns>>,
+    ) -> Self {
         Self {
             config: config.clone(),
             keys,
@@ -149,18 +153,20 @@ impl FetchFullTxns {
     }
 
     pub(crate) async fn scan_full_tx(
-        config: LightClientConfig,
+        config: LightClientConfig<P>,
         tx: Transaction,
         height: BlockHeight,
         unconfirmed: bool,
         block_time: u32,
-        keys: Arc<RwLock<Keys>>,
+        keys: Arc<RwLock<Keys<P>>>,
         wallet_txns: Arc<RwLock<WalletTxns>>,
         price: Option<f64>,
     ) {
         // Collect our t-addresses for easy checking
         let taddrs = keys.read().await.get_all_taddrs();
         let taddrs_set: HashSet<_> = taddrs.iter().map(|t| t.clone()).collect();
+
+        println!("Scan Full TX");
 
         // Step 1: Scan all transparent outputs to see if we recieved any money
         if let Some(t_bundle) = tx.transparent_bundle() {
@@ -170,6 +176,7 @@ impl FetchFullTxns {
                         let output_taddr = hash.to_base58check(&config.base58_pubkey_address(), &[]);
                         if taddrs_set.contains(&output_taddr) {
                             // This is our address. Add this as an output to the txid
+                            println!("sft: Recieved t funds {}", i64::from(vout.value));
                             wallet_txns.write().await.add_new_taddr_output(
                                 tx.txid(),
                                 output_taddr.clone(),
@@ -214,6 +221,7 @@ impl FetchFullTxns {
                             .find(|u| u.txid == prev_txid && u.output_index == prev_n)
                         {
                             info!("Spent: utxo from {} was spent in {}", prev_txid, tx.txid());
+                            println!("sft: T address spent {}", spent_utxo.value);
                             total_transparent_value_spent += spent_utxo.value;
                             spent_utxos.push((prev_txid, prev_n as u32, tx.txid(), height));
                         }
@@ -253,6 +261,7 @@ impl FetchFullTxns {
             if let Some(s_bundle) = tx.sapling_bundle() {
                 for s in s_bundle.shielded_spends.iter() {
                     if let Some((nf, value, txid)) = unspent_nullifiers.iter().find(|(nf, _, _)| *nf == s.nullifier) {
+                        println!("sft: nullifier spent: {}", value);
                         wallet_txns.write().await.add_new_spent(
                             tx.txid(),
                             height,
@@ -298,6 +307,7 @@ impl FetchFullTxns {
                         };
 
                     // info!("A sapling note was received into the wallet in {}", tx.txid());
+                    println!("sft: Sapling note recieved {}", note.value);
                     if unconfirmed {
                         wallet_txns.write().await.add_pending_note(
                             tx.txid(),
@@ -327,6 +337,8 @@ impl FetchFullTxns {
                                 is_outgoing_tx = true;
 
                                 let address = encode_payment_address(config.hrp_sapling_address(), &payment_address);
+
+                                println!("sft: Is outgoing TX");
 
                                 // Check if this is change, and if it also doesn't have a memo, don't add
                                 // to the outgoing metadata.
