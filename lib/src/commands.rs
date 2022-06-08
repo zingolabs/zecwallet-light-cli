@@ -231,14 +231,14 @@ impl<P: consensus::Parameters + Send + Sync + 'static> Command<P> for HelpComman
         match args.len() {
             0 => {
                 responses.push(format!("Available commands:"));
-                get_commands::<P>().iter().for_each(|(cmd, obj)| {
+                get_commands::<P>().iter().for_each(|(cmd, _obj)| {
                     responses.push(format!("{} - {}", cmd, Self::short_help()));
                 });
 
                 responses.join("\n")
             }
             1 => match get_commands::<P>().get(args[0]) {
-                Some(cmd) => Self::help(),
+                Some(_cmd) => Self::help(),
                 None => format!("Command {} not found", args[0]),
             },
             _ => Self::help(),
@@ -380,7 +380,7 @@ impl Help for ExportCommand {
 impl<P: consensus::Parameters + Send + Sync + 'static> Command<P> for ExportCommand {
     fn exec(&self, args: &[&str], lightclient: &LightClient<P>) -> String {
         if args.len() > 1 {
-            return ExportCommand::help();
+            return Self::help();
         }
 
         RT.block_on(async move {

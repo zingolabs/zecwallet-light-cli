@@ -197,7 +197,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
                 };
 
                 match &self.chain_name[..] {
-                    "zs" => {}
+                    "zs" | "main" => {}
                     "ztestsapling" => zcash_data_location.push("testnet3"),
                     "zregtestsapling" => zcash_data_location.push("regtest"),
                     c => panic!("Unknown chain {}", c),
@@ -354,7 +354,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
 
     pub fn base58_secretkey_prefix(&self) -> [u8; 1] {
         match &self.chain_name[..] {
-            "zs" => [0x80],
+            "zs" | "main" => [0x80],
             "ztestsapling" => [0xEF],
             "zregtestsapling" => [0xEF],
             c => panic!("Unknown chain {}", c),

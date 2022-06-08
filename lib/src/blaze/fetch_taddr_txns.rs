@@ -14,7 +14,6 @@ use zcash_primitives::consensus;
 use zcash_primitives::consensus::BlockHeight;
 
 use zcash_primitives::consensus::BranchId;
-use zcash_primitives::consensus::Parameters;
 use zcash_primitives::transaction::Transaction;
 
 pub struct FetchTaddrTxns<P> {
@@ -149,14 +148,13 @@ mod test {
     use tokio::sync::mpsc::UnboundedReceiver;
     use tokio::task::JoinError;
 
-    use tokio::sync::oneshot::{self};
-    use tokio::sync::RwLock;
-    use tokio::{sync::mpsc::unbounded_channel, task::JoinHandle};
-    use zcash_primitives::consensus::{BlockHeight, TEST_NETWORK};
-
     use crate::compact_formats::RawTransaction;
     use crate::lightclient::faketx;
     use crate::lightclient::lightclient_config::UnitTestNetwork;
+    use tokio::sync::oneshot::{self};
+    use tokio::sync::RwLock;
+    use tokio::{sync::mpsc::unbounded_channel, task::JoinHandle};
+    use zcash_primitives::consensus::BlockHeight;
     use zcash_primitives::transaction::Transaction;
 
     use crate::lightwallet::keys::Keys;
