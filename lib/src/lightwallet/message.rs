@@ -2,22 +2,24 @@ use byteorder::ReadBytesExt;
 use bytes::{Buf, Bytes, IntoBuf};
 use ff::Field;
 use group::GroupEncoding;
+use jubjub::ExtendedPoint;
 use rand::{rngs::OsRng, CryptoRng, RngCore};
 use std::{
     convert::TryInto,
     io::{self, ErrorKind, Read},
 };
 use zcash_note_encryption::{
-    EphemeralKeyBytes, NoteEncryption, OutgoingCipherKey, ShieldedOutput, ENC_CIPHERTEXT_SIZE, OUT_CIPHERTEXT_SIZE,
+    EphemeralKeyBytes, NoteEncryption, OutgoingCipherKey, ENC_CIPHERTEXT_SIZE, OUT_CIPHERTEXT_SIZE,
 };
 use zcash_primitives::{
-    consensus::{BlockHeight, MainNetwork, MAIN_NETWORK},
+    consensus::{BlockHeight, MAIN_NETWORK},
     keys::OutgoingViewingKey,
     memo::Memo,
     sapling::{
         note_encryption::{prf_ock, try_sapling_note_decryption, SaplingDomain},
         PaymentAddress, Rseed, SaplingIvk, ValueCommitment,
     },
+    transaction::components::{OutputDescription, GROTH_PROOF_SIZE},
 };
 
 pub struct Message {
@@ -172,33 +174,17 @@ impl Message {
         let mut enc_bytes = [0u8; ENC_CIPHERTEXT_SIZE];
         reader.read_exact(&mut enc_bytes)?;
 
-        #[derive(Debug)]
-        struct Unspendable {
-            cmu_bytes: [u8; 32],
-            epk_bytes: [u8; 32],
-            enc_bytes: [u8; ENC_CIPHERTEXT_SIZE],
-        }
-
-        impl ShieldedOutput<SaplingDomain<MainNetwork>, ENC_CIPHERTEXT_SIZE> for Unspendable {
-            fn ephemeral_key(&self) -> EphemeralKeyBytes {
-                EphemeralKeyBytes(self.epk_bytes)
-            }
-            fn cmstar_bytes(&self) -> [u8; 32] {
-                self.cmu_bytes
-            }
-            fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] {
-                &self.enc_bytes
-            }
-        }
-
         match try_sapling_note_decryption(
             &MAIN_NETWORK,
             BlockHeight::from_u32(1_500_000),
             &ivk,
-            &Unspendable {
-                cmu_bytes,
-                epk_bytes,
-                enc_bytes,
+            &OutputDescription {
+                cmu: cmu.unwrap(),
+                ephemeral_key: EphemeralKeyBytes::from(epk_bytes),
+                enc_ciphertext: enc_bytes,
+                cv: ExtendedPoint::identity(),
+                out_ciphertext: [0u8; 80],
+                zkproof: [0; GROTH_PROOF_SIZE],
             },
         ) {
             Some((_note, address, memo)) => Ok(Self::new(
