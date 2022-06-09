@@ -1124,8 +1124,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         };
 
         let (progress_notifier, progress_notifier_rx) = mpsc::channel();
-        // TODO: Target height
-        let mut builder = Builder::new(self.config.get_params().clone(), BlockHeight::from_u32(1_695_000));
+        let mut builder = Builder::new(self.config.get_params().clone(), target_height);
         builder.with_progress_notifier(progress_notifier);
 
         // Create a map from address -> sk for all taddrs, so we can spend from the
