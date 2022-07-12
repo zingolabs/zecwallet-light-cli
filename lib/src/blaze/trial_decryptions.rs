@@ -61,7 +61,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
             while let Some(cb) = rx.recv().await {
                 cbs.push(cb);
 
-                if cbs.len() >= 1_000 {
+                if cbs.len() >= 100 {
                     let keys = keys.clone();
                     let ivks = ivks.clone();
                     let wallet_txns = wallet_txns.clone();
