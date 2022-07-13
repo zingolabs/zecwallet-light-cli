@@ -1238,10 +1238,6 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
     /// Start syncing in batches with the max size, so we don't consume memory more than
     // wha twe can handle.
     async fn start_sync(&self) -> Result<JsonValue, String> {
-        // We can only do one sync at a time because we sync blocks in serial order
-        // If we allow multiple syncs, they'll all get jumbled up.
-        let _lock = self.sync_lock.lock().await;
-
         // The top of the wallet
         let last_scanned_height = self.wallet.last_scanned_height().await;
 
@@ -1274,7 +1270,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
         // Re-read the last scanned height
         let last_scanned_height = self.wallet.last_scanned_height().await;
-        let batch_size = 50_000;
+        let batch_size = 25_000;
 
         let mut latest_block_batches = vec![];
         let mut prev = last_scanned_height;
@@ -1297,7 +1293,14 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
         let mut res = Err("No batches were run!".to_string());
         for (batch_num, batch_latest_block) in latest_block_batches.into_iter().enumerate() {
-            res = self.start_sync_batch(batch_latest_block, batch_num).await;
+            {
+                // We can only do one sync at a time because we sync blocks in serial order
+                // If we allow multiple syncs, they'll all get jumbled up.
+                let _lock = self.sync_lock.lock().await;
+                res = self.start_sync_batch(batch_latest_block, batch_num).await;
+            }
+
+            self.do_save().await?;
             if res.is_err() {
                 return res;
             }
