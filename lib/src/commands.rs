@@ -869,7 +869,7 @@ impl Help for SaveCommand {
 impl<P: consensus::Parameters + Send + Sync + 'static> Command<P> for SaveCommand {
     fn exec(&self, _args: &[&str], lightclient: &LightClient<P>) -> String {
         RT.block_on(async move {
-            match lightclient.do_save().await {
+            match lightclient.do_save(true).await {
                 Ok(_) => {
                     let r = object! { "result" => "success" };
                     r.pretty(2)
@@ -1305,7 +1305,7 @@ impl Help for QuitCommand {
 impl<P: consensus::Parameters + Send + Sync + 'static> Command<P> for QuitCommand {
     fn exec(&self, _args: &[&str], lightclient: &LightClient<P>) -> String {
         RT.block_on(async move {
-            match lightclient.do_save().await {
+            match lightclient.do_save(true).await {
                 Ok(_) => "".to_string(),
                 Err(e) => e,
             }
