@@ -10,7 +10,7 @@ use crate::{
     lightclient::lightclient_config::MAX_REORG,
     lightwallet::{self, data::WalletTx, message::Message, now, LightWallet},
 };
-use futures::future::join_all;
+use futures::{stream::FuturesUnordered, StreamExt};
 use json::{array, object, JsonValue};
 use log::{error, info, warn};
 use std::{
@@ -309,7 +309,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             let wallet = LightWallet::read(&mut reader, config).await?;
 
             let lc = LightClient {
-                wallet: wallet,
+                wallet,
                 config: config.clone(),
                 mempool_monitor: std::sync::RwLock::new(None),
                 sync_lock: Mutex::new(()),
@@ -493,7 +493,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
             {
                 // Prevent any overlapping syncs during save, and don't save in the middle of a sync
-                let _lock = if (grab_lock) {
+                let _lock = if grab_lock {
                     Some(self.sync_lock.lock().await)
                 } else {
                     None
@@ -1247,7 +1247,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         // We can only do one sync at a time because we sync blocks in serial order
         // If we allow multiple syncs, they'll all get jumbled up.
         let _lock = self.sync_lock.lock().await;
-
+    
         // The top of the wallet
         let last_scanned_height = self.wallet.last_scanned_height().await;
 
@@ -1280,34 +1280,43 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
         // Re-read the last scanned height
         let last_scanned_height = self.wallet.last_scanned_height().await;
-        let batch_size = 25_000;
 
         let mut latest_block_batches = vec![];
         let mut prev = last_scanned_height;
         while latest_block_batches.is_empty() || prev != latest_blockid.height {
+            let mut batch_size = 50_000;
+            if prev + batch_size > 1_700_000 {
+                batch_size = 1_000;
+            }
+
             let batch = cmp::min(latest_blockid.height, prev + batch_size);
             prev = batch;
             latest_block_batches.push(batch);
         }
 
-        //println!("Batches are {:?}", latest_block_batches);
+        // println!("Batches are {:?}", latest_block_batches);
 
         // Increment the sync ID so the caller can determine when it is over
-        self.bsync_data
-            .write()
-            .await
-            .sync_status
-            .write()
-            .await
-            .start_new(latest_block_batches.len());
+        {
+            let l1 = self.bsync_data.write().await;
+            // println!("l1");
+
+            let mut l2 = l1.sync_status.write().await;
+            // println!("l2");
+
+            l2.start_new(latest_block_batches.len());
+        }
+        // println!("Started new sync");
 
         let mut res = Err("No batches were run!".to_string());
         for (batch_num, batch_latest_block) in latest_block_batches.into_iter().enumerate() {
+            // println!("Starting batch {}", batch_num);
             res = self.start_sync_batch(batch_latest_block, batch_num).await;
-
-            self.do_save(false).await?;
             if res.is_err() {
+                info!("Sync failed, not saving: {:?}", res.as_ref().err());
                 return res;
+            } else {
+                self.do_save(false).await?;
             }
         }
 
@@ -1320,7 +1329,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let uri = self.config.server.clone();
 
         // The top of the wallet
+        // println!("Trying to get last scanned height");
         let last_scanned_height = self.wallet.last_scanned_height().await;
+        // println!("Got last scanned height : {}", last_scanned_height);
 
         info!(
             "Latest block is {}, wallet block is {}",
@@ -1430,28 +1441,25 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let block_data = bsync_data.clone();
         let verify_handle = tokio::spawn(async move { block_data.read().await.block_data.verify_sapling_tree().await });
 
+        // Collect all the handles in a Unordered Future, so if any of them fails, we immediately know.
+        let mut tasks = FuturesUnordered::new();
+        tasks.push(trial_decrypts_handle);
+        tasks.push(fulltx_fetcher_handle);
+        tasks.push(fetch_compact_blocks_handle);
+        tasks.push(taddr_fetcher_handle);
+
+        tasks.push(update_notes_handle);
+        tasks.push(taddr_txns_handle);
+        tasks.push(fetch_full_txns_handle);
+
         // Wait for everything to finish
-
-        // Await all the futures
-        let r1 = tokio::spawn(async move {
-            join_all(vec![trial_decrypts_handle, fulltx_fetcher_handle, taddr_fetcher_handle])
-                .await
-                .into_iter()
-                .map(|r| r.map_err(|e| format!("{}", e)))
-                .collect::<Result<(), _>>()
-        });
-
-        join_all(vec![
-            update_notes_handle,
-            taddr_txns_handle,
-            fetch_compact_blocks_handle,
-            fetch_full_txns_handle,
-            r1,
-        ])
-        .await
-        .into_iter()
-        .map(|r| r.map_err(|e| format!("{}", e))?)
-        .collect::<Result<(), String>>()?;
+        while let Some(r) = tasks.next().await {
+            match r {
+                Ok(Ok(_)) => (),
+                Ok(Err(s)) => return Err(s),
+                Err(e) => return Err(e.to_string()),
+            };
+        }
 
         let (verified, heighest_tree) = verify_handle.await.map_err(|e| e.to_string())?;
         info!("Sapling tree verification {}", verified);

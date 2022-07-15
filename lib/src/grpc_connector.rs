@@ -1,21 +1,25 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::compact_formats::compact_tx_streamer_client::CompactTxStreamerClient;
 use crate::compact_formats::{
     BlockId, BlockRange, ChainSpec, CompactBlock, Empty, LightdInfo, PriceRequest, PriceResponse, RawTransaction,
     TransparentAddressBlockFilter, TreeState, TxFilter,
 };
-use futures::future::join_all;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::warn;
-
-use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{Sender, UnboundedReceiver};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio_rustls::rustls::ClientConfig;
+use tokio::time::timeout;
+
+use tokio_rustls::{
+    rustls::ClientConfig,
+    rustls::{OwnedTrustAnchor, RootCertStore},
+};
 use tonic::transport::ClientTlsConfig;
 use tonic::{
     transport::{Channel, Error},
@@ -40,18 +44,25 @@ impl GrpcConnector {
             Channel::builder(self.uri.clone()).connect().await?
         } else {
             //println!("https");
-            let mut config = ClientConfig::new();
+            let mut root_store = RootCertStore::empty();
+            root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+                OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)
+            }));
+            let mut config = ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
 
             config.alpn_protocols.push(b"h2".to_vec());
-            config
-                .root_store
-                .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
 
-            let tls = ClientTlsConfig::new()
-                .rustls_client_config(config)
-                .domain_name(self.uri.host().unwrap());
+            let tls = ClientTlsConfig::new().domain_name(self.uri.host().unwrap());
 
-            Channel::builder(self.uri.clone()).tls_config(tls)?.connect().await?
+            Channel::builder(self.uri.clone())
+                .tls_config(tls)?
+                // .timeout(Duration::from_secs(10))
+                // .connect_timeout(Duration::from_secs(10))
+                .connect()
+                .await?
         };
 
         Ok(CompactTxStreamerClient::new(channel))
@@ -81,7 +92,7 @@ impl GrpcConnector {
     pub async fn start_taddr_txn_fetcher(
         &self,
     ) -> (
-        JoinHandle<()>,
+        JoinHandle<Result<(), String>>,
         oneshot::Sender<(
             (Vec<String>, u64, u64),
             oneshot::Sender<Vec<UnboundedReceiver<Result<RawTransaction, String>>>>,
@@ -97,7 +108,7 @@ impl GrpcConnector {
             let uri = uri.clone();
             if let Ok(((taddrs, start_height, end_height), result_tx)) = rx.await {
                 let mut tx_rs = vec![];
-                let mut tx_rs_workers = vec![];
+                let mut tx_rs_workers = FuturesUnordered::new();
 
                 // Create a stream for every t-addr
                 for taddr in taddrs {
@@ -115,9 +126,16 @@ impl GrpcConnector {
                 // Dispatch a set of recievers
                 result_tx.send(tx_rs).unwrap();
 
-                // // Wait for all the t-addr transactions to be fetched from LightwalletD and sent to the h1 handle.
-                join_all(tx_rs_workers).await;
+                // Wait for all the t-addr transactions to be fetched from LightwalletD and sent to the h1 handle.
+                while let Some(r) = tx_rs_workers.next().await {
+                    match r {
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(s)) => return Err(s),
+                        Err(r) => return Err(r.to_string()),
+                    }
+                }
             }
+            Ok(())
         });
 
         (h, tx)
@@ -127,7 +145,7 @@ impl GrpcConnector {
         &self,
         parameters: P,
     ) -> (
-        JoinHandle<()>,
+        JoinHandle<Result<(), String>>,
         UnboundedSender<(TxId, oneshot::Sender<Result<Transaction, String>>)>,
     ) {
         let (tx, mut rx) = unbounded_channel::<(TxId, oneshot::Sender<Result<Transaction, String>>)>();
@@ -152,6 +170,8 @@ impl GrpcConnector {
                     }
                 }
             }
+
+            Ok(())
         });
 
         (h, tx)
@@ -161,7 +181,7 @@ impl GrpcConnector {
         &self,
         start_height: u64,
         end_height: u64,
-        receivers: &[UnboundedSender<CompactBlock>; 2],
+        receivers: &[Sender<CompactBlock>; 2],
     ) -> Result<(), String> {
         let mut client = self.get_client().await.map_err(|e| format!("{}", e))?;
 
@@ -185,9 +205,25 @@ impl GrpcConnector {
             .map_err(|e| format!("{}", e))?
             .into_inner();
 
-        while let Some(block) = response.message().await.map_err(|e| format!("{}", e))? {
-            receivers[0].send(block.clone()).map_err(|e| format!("{}", e))?;
-            receivers[1].send(block).map_err(|e| format!("{}", e))?;
+        // First download all blocks and save them locally, so we don't timeout
+        let mut block_cache = Vec::new();
+
+        while let Some(block) = response.message()
+            .await
+            .map_err(|e| {
+                // println!("first error");
+                format!("{}", e)
+            })?
+            
+        {
+            block_cache.push(block);
+        }
+
+        // Send all the blocks to the recievers
+        for block in block_cache {
+            //println!("grpc connector Sent {}", block.height);
+            receivers[0].send(block.clone()).await.map_err(|e| format!("{}", e))?;
+            receivers[1].send(block).await.map_err(|e| format!("{}", e))?;
         }
 
         Ok(())

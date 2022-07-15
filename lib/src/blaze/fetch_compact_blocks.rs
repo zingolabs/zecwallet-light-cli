@@ -4,7 +4,7 @@ use crate::{
     compact_formats::CompactBlock, grpc_connector::GrpcConnector, lightclient::lightclient_config::LightClientConfig,
 };
 use log::info;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Sender, UnboundedReceiver};
 use zcash_primitives::consensus;
 
 pub struct FetchCompactBlocks<P> {
@@ -18,7 +18,7 @@ impl<P: consensus::Parameters> FetchCompactBlocks<P> {
 
     async fn fetch_blocks_range(
         &self,
-        receivers: &[UnboundedSender<CompactBlock>; 2],
+        receivers: &[Sender<CompactBlock>; 2],
         start_block: u64,
         end_block: u64,
     ) -> Result<(), String> {
@@ -44,7 +44,7 @@ impl<P: consensus::Parameters> FetchCompactBlocks<P> {
     // Load all the blocks from LightwalletD
     pub async fn start(
         &self,
-        receivers: [UnboundedSender<CompactBlock>; 2],
+        receivers: [Sender<CompactBlock>; 2],
         start_block: u64,
         end_block: u64,
         mut reorg_rx: UnboundedReceiver<Option<u64>>,

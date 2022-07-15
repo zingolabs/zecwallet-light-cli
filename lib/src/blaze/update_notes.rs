@@ -5,8 +5,9 @@ use std::sync::Arc;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::join;
+use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
-use tokio::sync::{mpsc::unbounded_channel, RwLock};
+use tokio::sync::{RwLock};
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 
 use zcash_primitives::consensus::BlockHeight;
@@ -84,13 +85,13 @@ impl UpdateNotes {
     ) -> (
         JoinHandle<Result<(), String>>,
         oneshot::Sender<u64>,
-        UnboundedSender<(TxId, Nullifier, BlockHeight, Option<u32>)>,
+        Sender<(TxId, Nullifier, BlockHeight, Option<u32>)>,
     ) {
         //info!("Starting Note Update processing");
         let download_memos = bsync_data.read().await.wallet_options.download_memos;
 
         // Create a new channel where we'll be notified of TxIds that are to be processed
-        let (tx, mut rx) = unbounded_channel::<(TxId, Nullifier, BlockHeight, Option<u32>)>();
+        let (tx, mut rx) = channel::<(TxId, Nullifier, BlockHeight, Option<u32>)>(4);
 
         // Aside from the incoming Txns, we also need to update the notes that are currently in the wallet
         let wallet_txns = self.wallet_txns.clone();
@@ -109,6 +110,7 @@ impl UpdateNotes {
             for (txid, nf) in notes {
                 tx_existing
                     .send((txid, nf, BlockHeight::from(earliest_block as u32), None))
+                    .await
                     .map_err(|e| format!("Error sending note for updating: {}", e))?;
             }
 
