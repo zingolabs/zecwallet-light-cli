@@ -7,7 +7,7 @@ use futures::StreamExt;
 use tokio::join;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
-use tokio::sync::{RwLock};
+use tokio::sync::RwLock;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 
 use zcash_primitives::consensus::BlockHeight;

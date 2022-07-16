@@ -208,14 +208,10 @@ impl GrpcConnector {
         // First download all blocks and save them locally, so we don't timeout
         let mut block_cache = Vec::new();
 
-        while let Some(block) = response.message()
-            .await
-            .map_err(|e| {
-                // println!("first error");
-                format!("{}", e)
-            })?
-            
-        {
+        while let Some(block) = response.message().await.map_err(|e| {
+            // println!("first error");
+            format!("{}", e)
+        })? {
             block_cache.push(block);
         }
 
