@@ -4,11 +4,15 @@ use crate::{
         data::OutgoingTxMetadata,
         keys::{Keys, ToBase58Check},
         wallet_txns::WalletTxns,
+        LightWallet,
     },
 };
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
+use orchard::note_encryption::OrchardDomain;
+use zcash_note_encryption::{try_note_decryption, try_output_recovery_with_ovk};
+
 use std::{
     collections::HashSet,
     convert::{TryFrom, TryInto},
@@ -261,11 +265,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
         // Step 3: Check if any of the nullifiers spent in this Tx are ours. We only need this for unconfirmed txns,
         // because for txns in the block, we will check the nullifiers from the blockdata
         if unconfirmed {
-            let unspent_nullifiers = wallet_txns.read().await.get_unspent_nullifiers();
+            let unspent_nullifiers = wallet_txns.read().await.get_unspent_s_nullifiers();
             if let Some(s_bundle) = tx.sapling_bundle() {
                 for s in s_bundle.shielded_spends.iter() {
                     if let Some((nf, value, txid)) = unspent_nullifiers.iter().find(|(nf, _, _)| *nf == s.nullifier) {
-                        wallet_txns.write().await.add_new_spent(
+                        wallet_txns.write().await.add_new_s_spent(
                             tx.txid(),
                             height,
                             unconfirmed,
@@ -280,6 +284,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
         }
         // Collect all our z addresses, to check for change
         let z_addresses: HashSet<String> = HashSet::from_iter(keys.read().await.get_all_zaddresses().into_iter());
+        let u_addresses: HashSet<String> = HashSet::from_iter(keys.read().await.get_all_uaddresses().into_iter());
 
         // Collect all our OVKs, to scan for outputs
         let ovks: Vec<_> = keys
@@ -291,9 +296,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
             .collect();
 
         let extfvks = Arc::new(keys.read().await.get_all_extfvks());
-        let ivks: Vec<_> = extfvks.iter().map(|k| k.fvk.vk.ivk()).collect();
+        let s_ivks: Vec<_> = extfvks.iter().map(|k| k.fvk.vk.ivk()).collect();
 
-        // Step 4: Scan shielded sapling outputs to see if anyone of them is us, and if it is, extract the memo. Note that if this
+        // Step 4a: Scan shielded sapling outputs to see if anyone of them is us, and if it is, extract the memo. Note that if this
         // is invoked by a transparent transaction, and we have not seen this Tx from the trial_decryptions processor, the Note
         // might not exist, and the memo updating might be a No-Op. That's Ok, the memo will get updated when this Tx is scanned
         // a second time by the Full Tx Fetcher
@@ -302,7 +307,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
         if let Some(s_bundle) = tx.sapling_bundle() {
             for output in s_bundle.shielded_outputs.iter() {
                 // Search all of our keys
-                for (i, ivk) in ivks.iter().enumerate() {
+                for (i, ivk) in s_ivks.iter().enumerate() {
                     let (note, to, memo_bytes) =
                         match try_sapling_note_decryption(&config.get_params(), height, &ivk, output) {
                             Some(ret) => ret,
@@ -322,7 +327,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
                     }
 
                     let memo = memo_bytes.clone().try_into().unwrap_or(Memo::Future(memo_bytes));
-                    wallet_txns.write().await.add_memo_to_note(&tx.txid(), note, memo);
+                    wallet_txns.write().await.add_memo_to_s_note(&tx.txid(), note, memo);
                 }
 
                 // Also scan the output to see if it can be decoded with our OutgoingViewKey
@@ -368,6 +373,61 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
 
                 // Add it to the overall outgoing metadatas
                 outgoing_metadatas.extend(omds);
+            }
+        }
+
+        // Step 4b: Scan the orchard part of the bundle to see if there are any memos. We'll also scan the orchard outputs
+        // with our OutgoingViewingKey, to see if we can decrypt outgoing metadata
+        let o_ivks = keys.read().await.get_all_orchard_ivks();
+        let o_ovk = keys.read().await.okeys[0].fvk().to_ovk(orchard::keys::Scope::External);
+        if let Some(o_bundle) = tx.orchard_bundle() {
+            // let orchard_actions = o_bundle
+            //     .actions()
+            //     .into_iter()
+            //     .map(|oa| (OrchardDomain::for_action(oa), oa))
+            //     .collect::<Vec<_>>();
+
+            // let decrypts = try_note_decryption(o_ivks.as_ref(), orchard_actions.as_ref());
+            for oa in o_bundle.actions() {
+                let domain = OrchardDomain::for_action(oa);
+
+                for (ivk_num, ivk) in o_ivks.iter().enumerate() {
+                    if let Some((note, _address, memo_bytes)) = try_note_decryption(&domain, ivk, oa) {
+                        if let Ok(memo) = Memo::from_bytes(&memo_bytes) {
+                            wallet_txns.write().await.add_memo_to_o_note(
+                                &tx.txid(),
+                                &keys.read().await.okeys[ivk_num].fvk(),
+                                note,
+                                memo,
+                            );
+                        }
+                    }
+                }
+
+                // Also attempt output recovery using ovk to see if this wan an outgoing tx.
+                if let Some((note, ua_address, memo_bytes)) =
+                    try_output_recovery_with_ovk(&domain, &o_ovk, oa, oa.cv_net(), &oa.encrypted_note().out_ciphertext)
+                {
+                    is_outgoing_tx = true;
+                    let address = LightWallet::<P>::orchard_ua_address(&config, &ua_address);
+                    let memo = Memo::from_bytes(&memo_bytes).unwrap_or(Memo::default());
+
+                    info!(
+                        "Recovered output note of value {} memo {:?} sent to {}",
+                        note.value().inner(),
+                        memo,
+                        address
+                    );
+
+                    // If this is just our address with an empty memo, do nothing.
+                    if !(u_addresses.contains(&address) && memo == Memo::Empty) {
+                        outgoing_metadatas.push(OutgoingTxMetadata {
+                            address,
+                            value: note.value().inner(),
+                            memo,
+                        });
+                    }
+                }
             }
         }
 

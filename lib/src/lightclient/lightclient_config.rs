@@ -15,6 +15,7 @@ use log4rs::{
     Config,
 };
 use tokio::runtime::Runtime;
+use zcash_address::Network;
 use zcash_primitives::{
     consensus::{self, BlockHeight, NetworkUpgrade, Parameters},
     constants::{self},
@@ -25,7 +26,7 @@ use crate::{grpc_connector::GrpcConnector, lightclient::checkpoints};
 pub const DEFAULT_SERVER: &str = "https://lwdv3.zecwallet.co";
 pub const WALLET_NAME: &str = "zecwallet-light-wallet.dat";
 pub const LOGFILE_NAME: &str = "zecwallet-light-wallet.debug.log";
-pub const ANCHOR_OFFSET: [u32; 5] = [4, 0, 0, 0, 0];
+pub const DEFAULT_ANCHOR_OFFSET: u32 = 1;
 pub const MAX_REORG: usize = 100;
 pub const GAP_RULE_UNUSED_ADDRESSES: usize = if cfg!(any(target_os = "ios", target_os = "android")) {
     0
@@ -74,6 +75,10 @@ impl Parameters for UnitTestNetwork {
     fn b58_script_address_prefix(&self) -> [u8; 2] {
         constants::mainnet::B58_SCRIPT_ADDRESS_PREFIX
     }
+
+    fn address_network(&self) -> Option<zcash_address::Network> {
+        Some(zcash_address::Network::Main)
+    }
 }
 
 pub const UNITTEST_NETWORK: UnitTestNetwork = UnitTestNetwork;
@@ -83,7 +88,7 @@ pub struct LightClientConfig<P> {
     pub server: http::Uri,
     pub chain_name: String,
     pub sapling_activation_height: u64,
-    pub anchor_offset: [u32; 5],
+    pub anchor_offset: u32,
     pub monitor_mempool: bool,
     pub data_dir: Option<String>,
     pub params: P,
@@ -97,7 +102,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
             chain_name: params.hrp_sapling_payment_address().to_string(),
             sapling_activation_height: 1,
             monitor_mempool: false,
-            anchor_offset: [4u32; 5],
+            anchor_offset: 1,
             data_dir: dir,
             params: params.clone(),
         }
@@ -131,7 +136,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
                 chain_name,
                 monitor_mempool: false,
                 sapling_activation_height,
-                anchor_offset: ANCHOR_OFFSET,
+                anchor_offset: DEFAULT_ANCHOR_OFFSET,
                 data_dir: None,
                 params,
             };
@@ -148,6 +153,10 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
 
     pub fn get_params(&self) -> P {
         self.params.clone()
+    }
+
+    pub fn get_network(&self) -> Network {
+        self.params.address_network().unwrap_or(Network::Main).clone()
     }
 
     /// Build the Logging config
@@ -292,7 +301,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
         }
 
         info!("Getting sapling tree from LightwalletD at height {}", height);
-        match GrpcConnector::get_sapling_tree(self.server.clone(), height).await {
+        match GrpcConnector::get_merkle_tree(self.server.clone(), height).await {
             Ok(tree_state) => {
                 let hash = tree_state.hash.clone();
                 let tree = tree_state.tree.clone();
