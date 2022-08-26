@@ -143,6 +143,10 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                 let ctx_hash = ctx.hash;
                 let mut wallet_tx = false;
 
+                // If the epk or ciphertext is missing, that means this was a spam Tx, so we can't decrypt it
+                if ctx.actions.len() > 0
+                    && ctx.actions[0].ciphertext.len() > 0
+                    && ctx.actions[0].ephemeral_key.len() > 0
                 {
                     // Orchard
                     let orchard_actions = ctx
@@ -161,23 +165,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                         })
                         .collect::<Vec<_>>();
 
-                    // if orchard_actions.len() > 0 {
-                    //     println!(
-                    //         "Trial decrypting {} actions with {} o_ivks for txid {}",
-                    //         orchard_actions.len(),
-                    //         o_ivks.len(),
-                    //         WalletTx::new_txid(&ctx_hash)
-                    //     );
-                    // }
-
                     let decrypts = try_compact_note_decryption(o_ivks.as_ref(), orchard_actions.as_ref());
                     for (output_num, maybe_decrypted) in decrypts.into_iter().enumerate() {
                         if let Some(((note, _to), ivk_num)) = maybe_decrypted {
-                            // println!(
-                            //     "An orchard note was decrypted! {}:{:?}",
-                            //     note.value().inner(),
-                            //     note.recipient()
-                            // );
                             wallet_tx = true;
 
                             let ctx_hash = ctx_hash.clone();
@@ -216,7 +206,8 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                     }
                 }
 
-                {
+                // If the epk or ciphertext is missing, that means this was a spam Tx, so we can't decrypt it
+                if ctx.outputs.len() > 0 && ctx.outputs[0].epk.len() > 0 && ctx.outputs[0].ciphertext.len() > 0 {
                     // Sapling
                     let outputs_total = ctx.outputs.len();
                     // if outputs_total < 100 {
@@ -282,7 +273,6 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                             }));
                         }
                     }
-                    // }
                 }
 
                 // Check option to see if we are fetching all txns.

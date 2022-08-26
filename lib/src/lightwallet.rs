@@ -131,23 +131,25 @@ pub enum MemoDownloadOption {
 #[derive(Debug, Clone, Copy)]
 pub struct WalletOptions {
     pub(crate) download_memos: MemoDownloadOption,
+    pub(crate) spam_threshold: u64,
 }
 
 impl Default for WalletOptions {
     fn default() -> Self {
         WalletOptions {
             download_memos: MemoDownloadOption::WalletMemos,
+            spam_threshold: 0,
         }
     }
 }
 
 impl WalletOptions {
     pub fn serialized_version() -> u64 {
-        return 1;
+        return 2;
     }
 
     pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
-        let _version = reader.read_u64::<LittleEndian>()?;
+        let version = reader.read_u64::<LittleEndian>()?;
 
         let download_memos = match reader.read_u8()? {
             0 => MemoDownloadOption::NoMemos,
@@ -161,14 +163,25 @@ impl WalletOptions {
             }
         };
 
-        Ok(Self { download_memos })
+        let spam_threshold = if version <= 1 {
+            0
+        } else {
+            reader.read_u64::<LittleEndian>()?
+        };
+
+        Ok(Self {
+            download_memos,
+            spam_threshold,
+        })
     }
 
     pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
         // Write the version
         writer.write_u64::<LittleEndian>(Self::serialized_version())?;
 
-        writer.write_u8(self.download_memos as u8)
+        writer.write_u8(self.download_memos as u8)?;
+
+        writer.write_u64::<LittleEndian>(self.spam_threshold)
     }
 }
 
@@ -512,6 +525,10 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
     pub async fn set_download_memo(&self, value: MemoDownloadOption) {
         self.wallet_options.write().await.download_memos = value;
+    }
+
+    pub async fn set_spam_filter_threshold(&self, value: u64) {
+        self.wallet_options.write().await.spam_threshold = value;
     }
 
     pub async fn get_birthday(&self) -> u64 {

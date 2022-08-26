@@ -171,6 +171,7 @@ impl GrpcConnector {
         &self,
         start_height: u64,
         end_height: u64,
+        spam_filter_threshold: u64,
         receivers: &[Sender<CompactBlock>; 2],
     ) -> Result<(), String> {
         let mut client = self.get_client().await.map_err(|e| format!("{}", e))?;
@@ -187,6 +188,7 @@ impl GrpcConnector {
         let request = Request::new(BlockRange {
             start: Some(bs),
             end: Some(be),
+            spam_filter_threshold,
         });
 
         let mut response = client
@@ -271,7 +273,11 @@ impl GrpcConnector {
 
         let args = TransparentAddressBlockFilter {
             address: taddr,
-            range: Some(BlockRange { start, end }),
+            range: Some(BlockRange {
+                start,
+                end,
+                spam_filter_threshold: 0,
+            }),
         };
         let request = Request::new(args.clone());
 

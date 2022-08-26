@@ -1555,6 +1555,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                     [block_and_witness_data_tx, trial_decrypts_tx],
                     start_block,
                     end_block,
+                    0,
                     reorg_rx,
                 )
                 .await
