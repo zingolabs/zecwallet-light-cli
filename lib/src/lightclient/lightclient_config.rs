@@ -108,7 +108,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
         }
     }
 
-    pub fn create(params: P, server: http::Uri) -> io::Result<(LightClientConfig<P>, u64)> {
+    pub fn create(params: P, server: http::Uri, data_dir: Option<String>) -> io::Result<(LightClientConfig<P>, u64)> {
         use std::net::ToSocketAddrs;
 
         let s = server.clone();
@@ -131,15 +131,18 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
                 Ok::<_, std::io::Error>((info.chain_name, info.sapling_activation_height, info.block_height))
             })
         {
+
+            // Create a Light Client Config
             let config = LightClientConfig {
                 server: s,
                 chain_name,
                 monitor_mempool: false,
                 sapling_activation_height,
                 anchor_offset: DEFAULT_ANCHOR_OFFSET,
-                data_dir: None,
+                data_dir: data_dir,
                 params,
             };
+
 
             Ok((config, block_height))
         } else {
@@ -194,6 +197,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
             PathBuf::from(&self.data_dir.as_ref().unwrap()).into_boxed_path()
         } else {
             let mut zcash_data_location;
+            // If there's some --data-dir path provided, use it
             if self.data_dir.is_some() {
                 zcash_data_location = PathBuf::from(&self.data_dir.as_ref().unwrap());
             } else {
