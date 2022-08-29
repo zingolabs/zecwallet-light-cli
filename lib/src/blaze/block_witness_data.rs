@@ -471,8 +471,9 @@ impl BlockAndWitnessData {
 
                         // Check if the nullifier in this action belongs to us, which means it has been spent
                         for (wallet_nullifier, value, source_txid) in o_nullifiers.iter() {
-                            if orchard::note::Nullifier::from_bytes(vec_to_array(&action.nullifier)).unwrap()
-                                == *wallet_nullifier
+                            if action.nullifier.len() > 0
+                                && orchard::note::Nullifier::from_bytes(vec_to_array(&action.nullifier)).unwrap()
+                                    == *wallet_nullifier
                             {
                                 // This was our spend.
                                 let txid = WalletTx::new_txid(&ctx.hash);
