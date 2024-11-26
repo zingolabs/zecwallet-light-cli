@@ -14,7 +14,7 @@ zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash", bran
 zcash_note_encryption = { git = "https://github.com/zingolabs/librustzcash", branch = "master_zingo_recovering_tool"}
 zcash_encoding = { git = "https://github.com/zingolabs/librustzcash", branch = "master_zingo_recovering_tool"}
 zcash_proofs = { git = "https://github.com/zingolabs/librustzcash", branch = "master_zingo_recovering_tool"}
-orchard = { git = "https://github.com/zingolabs/orchard", rev = "0a960a380f4e9c3472c9260f3df61cd5e50d51b0" }
+orchard = { git = "https://github.com/adityapk00/orchard", rev = "0a960a380f4e9c3472c9260f3df61cd5e50d51b0" }
 
 #zcash_address = { path = "../librustzcash/components/zcash_address/" }
 #zcash_primitives = { path = "../librustzcash/zcash_primitives/" }
