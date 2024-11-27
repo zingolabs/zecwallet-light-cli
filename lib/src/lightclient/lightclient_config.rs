@@ -23,7 +23,7 @@ use zcash_primitives::{
 
 use crate::{grpc_connector::GrpcConnector, lightclient::checkpoints};
 
-pub const DEFAULT_SERVER: &str = "https://lwdv3.zecwallet.co";
+pub const DEFAULT_SERVER: &str = "https://zec.rocks:443";
 pub const WALLET_NAME: &str = "zecwallet-light-wallet.dat";
 pub const LOGFILE_NAME: &str = "zecwallet-light-wallet.debug.log";
 pub const DEFAULT_ANCHOR_OFFSET: u32 = 1;
